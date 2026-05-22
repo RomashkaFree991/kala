@@ -42,7 +42,7 @@ from tonsdk.utils import Address, bytes_to_b64str
 # ============================================================================
 # КОНФИГ
 # ============================================================================
-BOT_TOKEN = '8968269532:AAHtQ7hE9RtcHaZKdByViy0P7_wwRiXpUQ4'
+BOT_TOKEN = '8790723889:AAHFo28YMSITgulGdvgnQRhDKEY7fkCa0W4'
 ADMIN_CHAT_ID = -1003796999372
 TON_WALLET_MNEMONIC = 'mistake wild afraid law advice window shadow ladder true right teach clap quick wait pretty option raven web copper romance kidney skill ranch economy'
 TONCENTER_API_KEY = '171f40d9c9bf3c146b0196b38cfaac5915b2201adbbc1b79a059d608d682650b'
