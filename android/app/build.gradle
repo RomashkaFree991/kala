@@ -1,0 +1,43 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'fun.skkapap.kala'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'fun.skkapap.kala'
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+        // Server opened by default on first launch (can be changed in the app)
+        buildConfigField 'String', 'DEFAULT_SERVER', '"https://skkapap.fun"'
+    }
+    buildFeatures { buildConfig true }
+
+    signingConfigs {
+        release {
+            // Fixed key so APKs built anywhere (CI, your server, locally) can update each other.
+            storeFile file('../kala-release.jks')
+            storePassword 'kalakala'
+            keyAlias 'kala'
+            keyPassword 'kalakala'
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug { signingConfig signingConfigs.release }
+    }
+    lint { checkReleaseBuilds false; abortOnError false }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Kala" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bar</item>
+        <item name="android:navigationBarColor">@color/bar</item>
+        <item name="android:colorAccent">#5B7CFF</item>
+    </style>
+    <color name="bg">#0F1115</color>
+    <color name="bar">#171A21</color>
+    <color name="icon_bg">#1B2140</color>
+</resources>

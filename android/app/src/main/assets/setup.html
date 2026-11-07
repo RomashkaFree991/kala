@@ -1,0 +1,20 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{margin:0;background:#0f1115;color:#e8eaed;font:15px system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;box-sizing:border-box}
+.c{background:#171a21;border:1px solid #2a2f3a;border-radius:14px;padding:20px;width:100%;max-width:420px}
+h1{margin:0;font-size:30px}h1 span{color:#7c9cff}p{color:#9aa0aa;font-size:13px}
+input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #2a2f3a;background:#0f1115;color:#fff;font-size:15px;margin:8px 0}
+button{width:100%;padding:12px;border-radius:10px;border:0;background:#5b7cff;color:#fff;font-weight:600;font-size:15px;margin-top:6px}
+.e{color:#ff6b6b;font-size:13px;min-height:18px}</style></head>
+<body><div class="c"><h1>Ka<span>la</span></h1>
+<p id="msg">Адрес вашего сервера Kala</p>
+<input id="u" value="" placeholder="https://skkapap.fun" autocapitalize="none" inputmode="url">
+<div class="e" id="e"></div>
+<button id="go">Подключиться</button>
+</div>
+<script>
+var u=document.getElementById('u');
+u.value=KalaAndroid.getServer()||KalaAndroid.defaultServer();
+var err=new URLSearchParams(location.search).get('error');
+if(err){document.getElementById('msg').textContent='Не удалось открыть сервер. Проверьте адрес и интернет.';document.getElementById('e').textContent=err;}
+document.getElementById('go').onclick=function(){var v=u.value.trim();if(!/^https?:\/\//.test(v))v='https://'+v;KalaAndroid.setServer(v.replace(/\/+$/,''));};
+</script></body></html>

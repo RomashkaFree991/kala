@@ -1,0 +1,251 @@
+// Tools the AI agent can use. Server tools run on Linux; phone_* tools are
+// forwarded to the connected Android app over WebSocket.
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn } = require('child_process');
+const store = require('./store');
+const { MAX_TOOL_OUTPUT } = require('./config');
+
+const { DEFS } = require('./tooldefs');
+
+function clip(s, n = MAX_TOOL_OUTPUT) {
+  s = String(s == null ? '' : s);
+  if (s.length <= n) return s;
+  const half = Math.floor(n / 2);
+  return s.slice(0, half) + `\n…[обрезано ${s.length - n} символов]…\n` + s.slice(-half);
+}
+
+function abs(ctx, p) {
+  if (!p) return ctx.cwd;
+  p = String(p).replace(/^~(?=\/|$)/, os.homedir());
+  return path.resolve(ctx.cwd, p);
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<(br|p|div|li|h[1-6]|tr)[^>]*>/gi, '\n').replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n\n').trim();
+}
+
+const IMG_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
+
+function runBash(ctx, args) {
+  const command = String(args.command || '');
+  if (args.background) {
+    const logDir = path.join(ctx.cwd, '.kala-logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    const log = path.join(logDir, 'bg_' + Date.now() + '.log');
+    const fd = fs.openSync(log, 'a');
+    const p = spawn('bash', ['-lc', command], { cwd: ctx.cwd, detached: true, stdio: ['ignore', fd, fd], env: ctx.env });
+    p.unref();
+    return { content: `Запущено в фоне. PID ${p.pid}. Лог: ${log}` };
+  }
+  const timeout = Math.min(Math.max(Number(args.timeout_sec) || 900, 1), 7200) * 1000;
+  return new Promise((resolve) => {
+    const p = spawn('bash', ['-lc', command], { cwd: ctx.cwd, env: ctx.env, detached: true });
+    let out = '';
+    let killed = '';
+    const onData = (d) => {
+      const s = d.toString();
+      out += s;
+      if (out.length > MAX_TOOL_OUTPUT * 4) out = out.slice(-MAX_TOOL_OUTPUT * 2);
+      ctx.onOutput && ctx.onOutput(s);
+    };
+    p.stdout.on('data', onData);
+    p.stderr.on('data', onData);
+    const kill = (why) => { killed = why; try { process.kill(-p.pid, 'SIGKILL'); } catch {} };
+    const t = setTimeout(() => kill('таймаут ' + timeout / 1000 + 'с'), timeout);
+    const onAbort = () => kill('остановлено пользователем');
+    ctx.signal && ctx.signal.addEventListener('abort', onAbort);
+    p.on('close', (code) => {
+      clearTimeout(t);
+      ctx.signal && ctx.signal.removeEventListener('abort', onAbort);
+      let res = clip(out) + `\n[exit code: ${code}${killed ? ', ' + killed : ''}]`;
+      resolve({ content: res.trim(), isError: code !== 0 });
+    });
+    p.on('error', (e) => resolve({ content: 'Ошибка запуска: ' + e.message, isError: true }));
+  });
+}
+
+function listDir(dir, recursive, depth = 0, acc = []) {
+  let ents = [];
+  try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { acc.push('Ошибка: ' + e.message); return acc; }
+  ents.sort((a, b) => (b.isDirectory() - a.isDirectory()) || a.name.localeCompare(b.name));
+  for (const e of ents) {
+    if (acc.length > 2000) { acc.push('…(слишком много файлов)'); break; }
+    const full = path.join(dir, e.name);
+    let size = '';
+    if (!e.isDirectory()) { try { size = ' (' + fs.statSync(full).size + ' б)'; } catch {} }
+    acc.push('  '.repeat(depth) + e.name + (e.isDirectory() ? '/' : size));
+    if (recursive && e.isDirectory() && !['node_modules', '.git', '.gradle', 'build', '.godot', '__pycache__', '.venv', 'venv'].includes(e.name) && depth < 6) listDir(full, true, depth + 1, acc);
+  }
+  return acc;
+}
+
+async function phone(ctx, tool, args, timeoutMs = 120000) {
+  if (!ctx.phoneCall) throw new Error('Телефон не подключён');
+  return ctx.phoneCall(tool, args, timeoutMs);
+}
+
+function checkPhonePath(ctx, p) {
+  const allowed = ctx.chat.phoneAccess || { full: false, folders: [] };
+  const norm = path.posix.normalize(String(p || ''));
+  if (allowed.full) return norm;
+  const ok = (allowed.folders || []).some((f) => norm === f || norm.startsWith(f.replace(/\/$/, '') + '/'));
+  if (!ok) throw new Error(`Нет доступа к ${norm} на телефоне. Разрешённые папки: ${(allowed.folders || []).join(', ') || 'нет'}. Пользователь может выдать доступ в настройках чата.`);
+  return norm;
+}
+
+async function exec(ctx, name, args) {
+  args = args || {};
+  try {
+    switch (name) {
+      case 'bash': return await runBash(ctx, args);
+      case 'read_file': {
+        const f = abs(ctx, args.path);
+        const lines = fs.readFileSync(f, 'utf8').split('\n');
+        const off = Math.max((args.offset || 1) - 1, 0);
+        const lim = args.limit || 2000;
+        const slice = lines.slice(off, off + lim).map((l, i) => String(off + i + 1).padStart(5) + '│' + l).join('\n');
+        return { content: clip(slice) + (off + lim < lines.length ? `\n…(ещё ${lines.length - off - lim} строк)` : '') };
+      }
+      case 'write_file': {
+        const f = abs(ctx, args.path);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        const existed = fs.existsSync(f);
+        fs.writeFileSync(f, String(args.content ?? ''));
+        return { content: `${existed ? 'Перезаписан' : 'Создан'} ${f} (${Buffer.byteLength(String(args.content ?? ''))} байт)` };
+      }
+      case 'edit_file': {
+        const f = abs(ctx, args.path);
+        const src = fs.readFileSync(f, 'utf8');
+        const n = src.split(args.old_string).length - 1;
+        if (n === 0) return { content: 'old_string не найден в файле', isError: true };
+        if (n > 1 && !args.replace_all) return { content: `old_string найден ${n} раз — уточните фрагмент или replace_all=true`, isError: true };
+        const out = args.replace_all ? src.split(args.old_string).join(args.new_string) : src.replace(args.old_string, () => args.new_string);
+        fs.writeFileSync(f, out);
+        return { content: `Изменён ${f} (${n} замен)` };
+      }
+      case 'list_dir': {
+        const d = abs(ctx, args.path);
+        return { content: d + '\n' + clip(listDir(d, !!args.recursive).join('\n')) };
+      }
+      case 'delete_path': {
+        const f = abs(ctx, args.path);
+        if (f === '/' || f === ctx.cwd) return { content: 'Отказ: нельзя удалить ' + f, isError: true };
+        fs.rmSync(f, { recursive: true, force: true });
+        return { content: 'Удалено ' + f };
+      }
+      case 'move_path': {
+        const a = abs(ctx, args.from), b = abs(ctx, args.to);
+        fs.mkdirSync(path.dirname(b), { recursive: true });
+        fs.renameSync(a, b);
+        return { content: `${a} → ${b}` };
+      }
+      case 'web_fetch': {
+        const r = await fetch(args.url, {
+          method: args.method || 'GET', headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 14) KalaAgent/1.0', ...(args.headers || {}) },
+          body: args.body, signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(60000)].filter(Boolean)), redirect: 'follow',
+        });
+        const ct = r.headers.get('content-type') || '';
+        let body = await r.text();
+        if (args.as_text !== false && /html/.test(ct)) body = htmlToText(body);
+        return { content: `HTTP ${r.status} ${ct}\n\n` + clip(body, 40000), isError: !r.ok };
+      }
+      case 'web_search': {
+        const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(args.query), {
+          headers: { 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36' }, signal: AbortSignal.timeout(30000),
+        });
+        const html = await r.text();
+        const res = [];
+        for (const part of html.split('class="result__a"').slice(1)) {
+          if (res.length >= 10) break;
+          const href = part.match(/href="([^"]+)"/);
+          const title = part.match(/>([\s\S]*?)<\/a>/);
+          const snip = part.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/);
+          if (!href) continue;
+          let url = href[1].replace(/&amp;/g, '&');
+          const u = url.match(/uddg=([^&]+)/);
+          if (u) url = decodeURIComponent(u[1]);
+          res.push(`• ${htmlToText(title ? title[1] : '')}\n  ${url}\n  ${htmlToText(snip ? snip[1] : '')}`);
+        }
+        return { content: res.length ? res.join('\n\n') : 'Ничего не найдено (HTTP ' + r.status + ')' };
+      }
+      case 'download_file': {
+        const f = abs(ctx, args.path);
+        const r = await fetch(args.url, { signal: ctx.signal, redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 KalaAgent/1.0' } });
+        if (!r.ok) return { content: 'HTTP ' + r.status, isError: true };
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        const buf = Buffer.from(await r.arrayBuffer());
+        fs.writeFileSync(f, buf);
+        return { content: `Скачано ${buf.length} байт → ${f}` };
+      }
+      case 'view_image': {
+        const f = abs(ctx, args.path);
+        const mime = IMG_MIME[path.extname(f).toLowerCase()];
+        if (!mime) return { content: 'Не изображение: ' + f, isError: true };
+        const m = store.saveMedia(ctx.uid, fs.readFileSync(f), mime);
+        return { content: 'Изображение ' + f, images: [m.id] };
+      }
+      case 'send_file': {
+        const f = abs(ctx, args.path);
+        const st = fs.statSync(f);
+        if (!st.isFile()) return { content: 'Это папка, а не файл. Упакуйте её (zip) и отправьте архив.', isError: true };
+        return { content: `Файл отправлен пользователю: ${f} (${st.size} байт)`, file: { path: f, name: path.basename(f), size: st.size } };
+      }
+      case 'phone_take_photo': {
+        const r = await phone(ctx, 'take_photo', { camera: args.camera || 'back' }, 5 * 60000);
+        const buf = Buffer.from(r.base64, 'base64');
+        const f = abs(ctx, args.save_as || `photos/photo_${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        fs.writeFileSync(f, buf);
+        const m = store.saveMedia(ctx.uid, buf, 'image/jpeg');
+        return { content: `Фото сделано и сохранено: ${f} (${buf.length} байт)`, images: [m.id] };
+      }
+      case 'phone_list_files': {
+        const p = checkPhonePath(ctx, args.path);
+        const r = await phone(ctx, 'list', { path: p });
+        return { content: p + '\n' + r.items.map((i) => i.name + (i.dir ? '/' : ` (${i.size} б)`)).join('\n') };
+      }
+      case 'phone_read_file': {
+        const p = checkPhonePath(ctx, args.path);
+        const r = await phone(ctx, 'read', { path: p, maxBytes: 2 * 1024 * 1024 });
+        return { content: clip(Buffer.from(r.base64, 'base64').toString('utf8')) };
+      }
+      case 'phone_write_file': {
+        const p = checkPhonePath(ctx, args.path);
+        await phone(ctx, 'write', { path: p, base64: Buffer.from(String(args.content ?? '')).toString('base64') });
+        return { content: 'Записано на телефон: ' + p };
+      }
+      case 'phone_to_server': {
+        const p = checkPhonePath(ctx, args.phone_path);
+        const r = await phone(ctx, 'read', { path: p, maxBytes: 200 * 1024 * 1024 }, 10 * 60000);
+        const f = abs(ctx, args.server_path);
+        fs.mkdirSync(path.dirname(f), { recursive: true });
+        const buf = Buffer.from(r.base64, 'base64');
+        fs.writeFileSync(f, buf);
+        return { content: `Скопировано ${buf.length} байт: телефон ${p} → сервер ${f}` };
+      }
+      case 'server_to_phone': {
+        const p = checkPhonePath(ctx, args.phone_path);
+        const f = abs(ctx, args.server_path);
+        const buf = fs.readFileSync(f);
+        await phone(ctx, 'write', { path: p, base64: buf.toString('base64') }, 10 * 60000);
+        return { content: `Скопировано ${buf.length} байт: сервер ${f} → телефон ${p}` };
+      }
+      case 'phone_delete': {
+        const p = checkPhonePath(ctx, args.path);
+        await phone(ctx, 'delete', { path: p });
+        return { content: 'Удалено на телефоне: ' + p };
+      }
+      default: return { content: 'Неизвестный инструмент ' + name, isError: true };
+    }
+  } catch (e) {
+    return { content: 'Ошибка: ' + (e && e.message ? e.message : String(e)), isError: true };
+  }
+}
+
+module.exports = { DEFS, exec, clip };
