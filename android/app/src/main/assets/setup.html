@@ -4,17 +4,36 @@
 h1{margin:0;font-size:30px}h1 span{color:#7c9cff}p{color:#9aa0aa;font-size:13px}
 input{width:100%;box-sizing:border-box;padding:12px;border-radius:10px;border:1px solid #2a2f3a;background:#0f1115;color:#fff;font-size:15px;margin:8px 0}
 button{width:100%;padding:12px;border-radius:10px;border:0;background:#5b7cff;color:#fff;font-weight:600;font-size:15px;margin-top:6px}
-.e{color:#ff6b6b;font-size:13px;min-height:18px}</style></head>
+button.s{background:#1f232c;border:1px solid #2a2f3a}
+button:disabled{opacity:.6}
+.e{color:#ff6b6b;font-size:13px;min-height:18px;white-space:pre-wrap;word-break:break-word}
+.ok{color:#3ecf8e}</style></head>
 <body><div class="c"><h1>Ka<span>la</span></h1>
 <p id="msg">Адрес вашего сервера Kala</p>
-<input id="u" value="" placeholder="https://skkapap.fun" autocapitalize="none" inputmode="url">
+<input id="u" value="" placeholder="https://skkapap.fun" autocapitalize="none" autocorrect="off" inputmode="url">
 <div class="e" id="e"></div>
 <button id="go">Подключиться</button>
+<button id="http" class="s" style="display:none">Попробовать через http://</button>
+<p>Если не подключается — на сервере выполните<br><code>sudo bash ~/kala/server/doctor.sh skkapap.fun</code><br>и пришлите вывод.</p>
 </div>
 <script>
-var u=document.getElementById('u');
+var u=document.getElementById('u'),e=document.getElementById('e'),go=document.getElementById('go'),hb=document.getElementById('http');
+var cbs={},n=0;
+window.__kalaCb=function(id,json){var f=cbs[id];delete cbs[id];if(f)f(JSON.parse(json));};
 u.value=KalaAndroid.getServer()||KalaAndroid.defaultServer();
 var err=new URLSearchParams(location.search).get('error');
-if(err){document.getElementById('msg').textContent='Не удалось открыть сервер. Проверьте адрес и интернет.';document.getElementById('e').textContent=err;}
-document.getElementById('go').onclick=function(){var v=u.value.trim();if(!/^https?:\/\//.test(v))v='https://'+v;KalaAndroid.setServer(v.replace(/\/+$/,''));};
+if(err){document.getElementById('msg').textContent='Не удалось открыть сервер';e.textContent=err;hb.style.display='';}
+function norm(v){v=v.trim();if(!/^https?:\/\//i.test(v))v='https://'+v;return v.replace(/\/+$/,'');}
+function connect(v){
+  e.className='e';e.textContent='Проверяю '+v+' …';go.disabled=true;
+  var id='c'+(++n);
+  cbs[id]=function(r){
+    go.disabled=false;
+    if(r.ok){e.className='e ok';e.textContent='Сервер найден ✓';KalaAndroid.setServer(v);}
+    else{e.textContent=r.error||'Ошибка';if(/^https/.test(v))hb.style.display='';}
+  };
+  KalaAndroid.checkServer(id,v);
+}
+go.onclick=function(){u.value=norm(u.value);connect(u.value);};
+hb.onclick=function(){u.value=norm(u.value).replace(/^https:/,'http:');connect(u.value);};
 </script></body></html>

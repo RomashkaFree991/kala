@@ -85,6 +85,19 @@ public class MainActivity extends Activity {
             }
 
             @Override
+            public void onReceivedSslError(WebView view, android.webkit.SslErrorHandler handler, android.net.http.SslError error) {
+                handler.cancel();
+                view.loadUrl("file:///android_asset/setup.html?error=" + Uri.encode("Ошибка SSL-сертификата сервера (код " + error.getPrimaryError() + "). Сертификат ещё не выдан или неверный. Попробуйте адрес с http:// или запустите на сервере doctor.sh."));
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest req, android.webkit.WebResourceResponse resp) {
+                if (req.isForMainFrame() && resp.getStatusCode() >= 500) {
+                    view.loadUrl("file:///android_asset/setup.html?error=" + Uri.encode("Сервер ответил ошибкой " + resp.getStatusCode() + " — Kala на сервере не запущена (nginx не достучался). Выполните на сервере: sudo bash server/doctor.sh"));
+                }
+            }
+
+            @Override
             public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError err) {
                 if (req.isForMainFrame()) {
                     view.loadUrl("file:///android_asset/setup.html?error=" + Uri.encode(String.valueOf(err.getDescription())));
@@ -275,6 +288,45 @@ public class MainActivity extends Activity {
         @JavascriptInterface public void setServer(String url) {
             prefs.edit().putString("server", url).apply();
             runOnUiThread(() -> web.loadUrl(url + "/"));
+        }
+
+        /** Checks <url>/api/health in background, result via window.__kalaCb(cbId, json). */
+        @JavascriptInterface public void checkServer(String cbId, String url) {
+            new Thread(() -> {
+                JSONObject r = new JSONObject();
+                java.net.HttpURLConnection c = null;
+                try {
+                    c = (java.net.HttpURLConnection) new java.net.URL(url + "/api/health").openConnection();
+                    c.setConnectTimeout(10000);
+                    c.setReadTimeout(10000);
+                    c.setInstanceFollowRedirects(true);
+                    int code = c.getResponseCode();
+                    InputStream in = code < 400 ? c.getInputStream() : c.getErrorStream();
+                    StringBuilder sb = new StringBuilder();
+                    if (in != null) {
+                        byte[] b = new byte[4096]; int n;
+                        while ((n = in.read(b)) > 0 && sb.length() < 4000) sb.append(new String(b, 0, n, "UTF-8"));
+                    }
+                    String body = sb.toString();
+                    if (code == 200 && body.contains("kala")) r.put("ok", true);
+                    else if (code == 502 || code == 504) r.put("error", "nginx работает, но Kala на сервере не запущена (HTTP " + code + "). На сервере: sudo bash server/doctor.sh");
+                    else if (code == 200) r.put("error", "По этому адресу открывается другой сайт, а не Kala. Проверьте nginx (doctor.sh).");
+                    else r.put("error", "Сервер ответил HTTP " + code);
+                } catch (javax.net.ssl.SSLException e) {
+                    try { r.put("error", "Ошибка SSL: сертификат не выдан или неверный. Попробуйте http:// вместо https://\n(" + e.getMessage() + ")"); } catch (Exception ignored) { }
+                } catch (java.net.UnknownHostException e) {
+                    try { r.put("error", "Домен не найден (DNS). Проверьте A-запись домена."); } catch (Exception ignored) { }
+                } catch (java.net.ConnectException e) {
+                    try { r.put("error", "Сервер не принимает соединения (порт закрыт / nginx не запущен).\n" + e.getMessage()); } catch (Exception ignored) { }
+                } catch (java.net.SocketTimeoutException e) {
+                    try { r.put("error", "Сервер не отвечает (таймаут). Проверьте файрвол: порты 80 и 443."); } catch (Exception ignored) { }
+                } catch (Exception e) {
+                    try { r.put("error", e.getClass().getSimpleName() + ": " + e.getMessage()); } catch (Exception ignored) { }
+                } finally {
+                    if (c != null) c.disconnect();
+                }
+                callback(cbId, r);
+            }).start();
         }
 
         @JavascriptInterface public void changeServer() {
