@@ -9,6 +9,7 @@ const { MAX_TOOL_OUTPUT } = require('./config');
 
 const { DEFS } = require('./tooldefs');
 const rfs = require('./rootfs');
+const gdrive = require('./gdrive');
 
 // env vars kept when running commands as root through sudo
 const KEEP_ENV = 'PATH,ANDROID_HOME,ANDROID_SDK_ROOT,JAVA_HOME,PIP_BREAK_SYSTEM_PACKAGES,DEBIAN_FRONTEND,TMPDIR,CI,TERM';
@@ -246,6 +247,12 @@ async function exec(ctx, name, args) {
         if (st.dir) return { content: 'Это папка, а не файл. Упакуйте её (zip) и отправьте архив.', isError: true };
         return { content: `Файл отправлен пользователю: ${f} (${st.size} байт)`, file: { path: f, name: path.basename(f), size: st.size } };
       }
+      case 'gdrive_list': return { content: clip(await gdrive.list(ctx.uid, args.folder)) };
+      case 'gdrive_search': return { content: clip(await gdrive.search(ctx.uid, args.query)) };
+      case 'gdrive_download': return { content: await gdrive.download(ctx.uid, args.file, abs(ctx, args.server_path), ctx.root) };
+      case 'gdrive_upload': return { content: await gdrive.upload(ctx.uid, abs(ctx, args.server_path), args.folder, args.name, ctx.root) };
+      case 'gdrive_mkdir': return { content: await gdrive.mkdir(ctx.uid, args.name, args.parent) };
+      case 'gdrive_delete': return { content: await gdrive.trash(ctx.uid, args.file) };
       case 'phone_take_photo': {
         const r = await phone(ctx, 'take_photo', { camera: args.camera || 'back' }, 5 * 60000);
         const buf = Buffer.from(r.base64, 'base64');

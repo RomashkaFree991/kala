@@ -2,7 +2,7 @@
 // Minimal MCP (stdio) server started by Claude Code CLI. It exposes Kala's phone
 // and media tools and forwards calls to the local Kala server.
 const { DEFS } = require('./tooldefs');
-const EXPOSED = DEFS.filter((d) => d.name.startsWith('phone_') || d.name === 'server_to_phone' || d.name === 'view_image' || d.name === 'install_packages' || d.name === 'send_file');
+const EXPOSED = DEFS.filter((d) => d.name.startsWith('phone_') || d.name.startsWith('gdrive_') || d.name === 'server_to_phone' || d.name === 'view_image' || d.name === 'install_packages' || d.name === 'send_file');
 const URL = process.env.KALA_URL, TOKEN = process.env.KALA_TOKEN;
 
 function send(obj) { process.stdout.write(JSON.stringify(obj) + '\n'); }

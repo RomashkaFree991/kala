@@ -10,6 +10,7 @@ const auth = require('./auth');
 const providers = require('./providers');
 const agent = require('./agent');
 const rfs = require('./rootfs');
+const gdrive = require('./gdrive');
 
 const app = express();
 app.set('trust proxy', true);
@@ -48,6 +49,16 @@ app.get('/api/oauth/openrouter/callback', wrap(async (req, res) => {
   try { await providers.openRouterFinish(String(req.query.state || ''), String(req.query.code || '')); broadcastAll({ t: 'providers_changed' }); }
   catch (e) { ok = false; msg = e.message; }
   res.type('html').send(`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><body style="font-family:sans-serif;background:#0f1115;color:#eee;display:flex;align-items:center;justify-content:center;height:90vh;text-align:center"><div><h2>${ok ? '✅' : '❌'} ${msg.replace(/</g, '&lt;')}</h2><p><a style="color:#8ab4ff" href="kala://connected">Открыть Kala</a></p></div><script>setTimeout(()=>location.href='kala://connected',800)</script></body>`);
+}));
+
+app.get('/api/oauth/google/callback', wrap(async (req, res) => {
+  let ok = true, msg = 'Google Диск подключён! Вернитесь в приложение Kala.';
+  try {
+    if (req.query.error) throw new Error('Google: ' + req.query.error);
+    const uid = await gdrive.finish(String(req.query.state || ''), String(req.query.code || ''));
+    broadcast(uid, { t: 'providers_changed' });
+  } catch (e) { ok = false; msg = e.message; }
+  res.type('html').send(`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><body style="font-family:Inter,system-ui,sans-serif;background:#0a0a0a;color:#f5f5f5;display:flex;align-items:center;justify-content:center;height:90vh;text-align:center;padding:20px"><div><h2>${ok ? '✓' : '✕'} ${msg.replace(/</g, '&lt;')}</h2><p><a style="color:#fff" href="kala://connected">Открыть Kala</a></p></div><script>setTimeout(()=>location.href='kala://connected',900)</script></body>`);
 }));
 
 app.get('/api/media/:id', (req, res, next) => auth.middleware(req, res, () => {
@@ -113,6 +124,13 @@ api.post('/claude-login/start', wrap(async (req, res) => {
   res.json({ url: await providers.claudeLoginStart(req.user.id) });
 }));
 api.post('/claude-login/finish', wrap(async (req, res) => { await providers.claudeLoginFinish(req.user.id, req.body.code); res.json({ ok: true }); }));
+
+// ---------- Google Drive ----------
+const googleRedirect = (req) => publicUrl(req) + '/api/oauth/google/callback';
+api.get('/gdrive', (req, res) => res.json(gdrive.status(req.user.id, googleRedirect(req))));
+api.post('/gdrive/connect', wrap((req, res) => res.json({ url: gdrive.authUrl(req.user.id, String(req.body.clientId || '').trim(), String(req.body.clientSecret || '').trim(), googleRedirect(req)) })));
+api.delete('/gdrive', (req, res) => { gdrive.disconnect(req.user.id); res.json({ ok: true }); });
+api.get('/gdrive/list', wrap(async (req, res) => res.json({ text: await gdrive.list(req.user.id, req.query.folder) })));
 
 api.get('/models', wrap(async (req, res) => {
   const conns = store.getProviders(req.user.id);

@@ -9,6 +9,7 @@
     chat: null,
     run: { running: false, partial: '', toolOutputs: {} },
     open: new Set(), // expanded tool cards
+    seen: new Set(), // rendered message ids (for entry animation)
     pending: [], // attachments for next message
     ws: null,
     wsOk: false,
@@ -140,7 +141,7 @@
     try {
       let r;
       const a = m.args || {};
-      if (m.tool === 'take_photo') { toast('📷 ИИ просит сделать фото'); r = await nativeAsync('takePhoto', a.camera || 'back'); }
+      if (m.tool === 'take_photo') { toast('ИИ просит сделать фото'); r = await nativeAsync('takePhoto', a.camera || 'back'); }
       else if (m.tool === 'list') r = JSON.parse(A.listFiles(a.path));
       else if (m.tool === 'find') r = phoneFind(a.path, a.query, a.limit || 200);
       else if (m.tool === 'read') r = JSON.parse(A.readFile(a.path, a.maxBytes || 2097152));
@@ -182,7 +183,7 @@
     const app = $('#app');
     const draw = () => {
       app.innerHTML = `<div class="center"><div class="card">
-        <div class="logo">Ka<span>la</span></div>
+        <div class="logo"><span class="mark">${ic('spark')}</span>Kala</div>
         <div class="muted">${mode === 'login' ? 'Вход на сервер ' + esc(location.host) : (st.hasUsers ? 'Регистрация по инвайт-коду' : 'Первый запуск: создайте аккаунт владельца')}</div>
         <input class="field" id="u" placeholder="Логин" autocomplete="username" autocapitalize="none">
         <input class="field" id="p" type="password" placeholder="Пароль" autocomplete="current-password">
@@ -219,10 +220,10 @@
     try { const me = await api('/me'); S.user = me.user; S.root = me.workspaceRoot; } catch (e) { return renderAuth(); }
     $('#app').innerHTML = `
       <div class="top">
-        <button class="icon" id="menu">☰</button>
+        <button class="icon" id="menu">${ic('menu')}</button>
         <div class="title" id="ttl"><b>Kala</b><span class="chip" id="mchip">выберите чат</span></div>
         <span class="dot" id="conn"></span>
-        <button class="icon" id="csettings" title="Настройки чата">⚙︎</button>
+        <button class="icon" id="csettings" title="Настройки чата">${ic('settings')}</button>
       </div>
       <div id="msgs"></div>
       <div class="composer" id="composer"></div>
@@ -248,19 +249,20 @@
     const d = $('#drawer');
     if (!d) return;
     d.innerHTML = `
-      <div class="head"><div class="logo">Ka<span>la</span></div><div class="muted">${esc(S.user ? S.user.username : '')} · ${esc(location.host)}</div>
-        <button class="btn primary block" id="newchat">＋ Новый чат</button></div>
-      <div class="list" id="chatlist">${S.chats.length ? '' : '<div class="muted" style="padding:14px">Чатов пока нет</div>'}</div>
+      <div class="head"><div class="logo"><span class="mark">${ic('spark')}</span>Kala</div><div class="muted">${esc(S.user ? S.user.username : '')} · ${esc(location.host)}</div>
+        <button class="btn primary block" id="newchat">${ic('plus')} Новый чат</button></div>
+      <div class="sect">Чаты</div>
+      <div class="list" id="chatlist">${S.chats.length ? '' : '<div class="muted" style="padding:10px 12px">Чатов пока нет</div>'}</div>
       <div class="foot">
-        <button class="item" id="nprov">🔌 <span class="t">Подключения (ИИ)</span></button>
-        <button class="item" id="nfiles">📁 <span class="t">Файлы на сервере</span></button>
-        ${A ? '<button class="item" id="nperm">📱 <span class="t">Доступ к памяти телефона</span></button>' : ''}
-        ${A ? '<button class="item" id="nsrv">🌐 <span class="t">Сменить сервер</span></button>' : ''}
-        <button class="item" id="nout">🚪 <span class="t">Выйти</span></button>
+        <button class="item" id="nprov">${ic('plug')}<span class="t">Подключения</span></button>
+        <button class="item" id="nfiles">${ic('folder')}<span class="t">Файлы на сервере</span></button>
+        ${A ? `<button class="item" id="nperm">${ic('phone')}<span class="t">Доступ к памяти телефона</span></button>` : ''}
+        ${A ? `<button class="item" id="nsrv">${ic('globe')}<span class="t">Сменить сервер</span></button>` : ''}
+        <button class="item" id="nout">${ic('logout')}<span class="t">Выйти</span></button>
       </div>`;
     const list = $('#chatlist');
     for (const c of S.chats) {
-      const el = h(`<button class="item ${S.chat && S.chat.id === c.id ? 'sel' : ''}"><span class="dot ${c.running ? 'busy' : ''}" style="${c.running ? '' : 'visibility:hidden'}"></span><span class="t">${esc(c.title)}<small>${esc(c.model)} · ${esc(c.workspace.split('/').pop())} · ${timeAgo(c.updatedAt)}</small></span></button>`);
+      const el = h(`<button class="item ${S.chat && S.chat.id === c.id ? 'sel' : ''}">${c.running ? '<span class="dot busy"></span>' : ic(c.serverAccess === 'full' ? 'server' : 'chat', 'sm')}<span class="t">${esc(c.title)}<small>${esc(c.model)} · ${esc(c.workspace.split('/').pop())} · ${timeAgo(c.updatedAt)}</small></span></button>`);
       el.onclick = () => { toggleDrawer(false); loadChat(c.id); };
       list.appendChild(el);
     }
@@ -278,9 +280,9 @@
   function renderEmpty() {
     S.chat = null;
     renderHeader();
-    $('#msgs').innerHTML = `<div class="empty"><div class="big">🤖</div><h3>Kala — ИИ-агент на вашем сервере</h3>
-      <p>1. Подключите ИИ (Claude Code, Antigravity/Gemini, OpenCode, OpenRouter…)<br>2. Создайте чат, выберите модель и папку проекта<br>3. Пишите задачу — ИИ сам правит файлы, ставит пакеты, собирает APK, Godot и т.д.</p>
-      <button class="btn" id="e1">🔌 Подключения</button> <button class="btn primary" id="e2">＋ Новый чат</button></div>`;
+    $('#msgs').innerHTML = `<div class="empty"><div class="big">${ic('spark', 'xl')}</div><h3>Kala — ИИ-агент на вашем сервере</h3>
+      <p class="muted">Подключите ИИ, создайте чат и опишите задачу — ИИ сам правит файлы, ставит пакеты, собирает APK и игры Godot, работает с телефоном и Google Диском.</p>
+      <div class="row"><button class="btn" id="e1">${ic('plug', 'sm')} Подключения</button><button class="btn primary" id="e2">${ic('plus', 'sm')} Новый чат</button></div></div>`;
     $('#e1').onclick = providersPage; $('#e2').onclick = newChat;
     renderComposer();
   }
@@ -288,7 +290,7 @@
     const t = $('#ttl');
     if (!t) return;
     if (!S.chat) { t.innerHTML = '<b>Kala</b><span class="chip">нет чата</span>'; return; }
-    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">${S.chat.serverAccess === 'full' ? '🖥 VPS · ' : ''}🧠 ${esc(S.chat.model)} ▾</span>`;
+    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">${ic(S.chat.serverAccess === 'full' ? 'server' : 'cpu')}${S.chat.serverAccess === 'full' ? 'VPS · ' : ''}${esc(S.chat.model)}${ic('down')}</span>`;
     $('#mchip').onclick = () => pickModel(S.chat.provider, S.chat.model, async (p, m) => {
       await api('/chats/' + S.chat.id, { method: 'PATCH', body: { provider: p, model: m } });
       S.chat.provider = p; S.chat.model = m; renderHeader(); toast('Модель: ' + m);
@@ -314,13 +316,16 @@
   let rq = false;
   function scheduleRender() { if (rq) return; rq = true; requestAnimationFrame(() => { rq = false; renderMsgs(); }); }
 
-  const TOOL_ICONS = { install_packages: '🧰', phone_find: '🔍', bash: '💻', read_file: '📖', write_file: '📝', edit_file: '✏️', list_dir: '📂', delete_path: '🗑', move_path: '🔀', web_fetch: '🌐', web_search: '🔎', download_file: '⬇️', view_image: '🖼', send_file: '📦', phone_take_photo: '📷', phone_list_files: '📱', phone_read_file: '📱', phone_write_file: '📱', phone_to_server: '📲', server_to_phone: '📲', phone_delete: '📱', Bash: '💻', Read: '📖', Write: '📝', Edit: '✏️', MultiEdit: '✏️', Glob: '📂', Grep: '🔎', LS: '📂', WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Task: '🧩' };
+  const TOOL_ICONS = { install_packages: 'package', phone_find: 'search', bash: 'terminal', read_file: 'filetext', write_file: 'pencil', edit_file: 'pencil', list_dir: 'folder', delete_path: 'trash', move_path: 'move', web_fetch: 'globe', web_search: 'search', download_file: 'download', view_image: 'image', send_file: 'package', phone_take_photo: 'camera', phone_list_files: 'phone', phone_read_file: 'phone', phone_write_file: 'phone', phone_to_server: 'upload', server_to_phone: 'download', phone_delete: 'trash', gdrive_list: 'drive', gdrive_search: 'drive', gdrive_download: 'download', gdrive_upload: 'upload', gdrive_mkdir: 'drive', gdrive_delete: 'trash', Bash: 'terminal', Read: 'filetext', Write: 'pencil', Edit: 'pencil', MultiEdit: 'pencil', Glob: 'folder', Grep: 'search', LS: 'folder', WebFetch: 'globe', WebSearch: 'search', TodoWrite: 'list', Task: 'cpu' };
+  const TOOL_NAMES = { install_packages: 'Установка', phone_find: 'Поиск на телефоне', bash: 'Терминал', read_file: 'Чтение', write_file: 'Запись файла', edit_file: 'Правка', list_dir: 'Папка', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос', web_search: 'Поиск', download_file: 'Скачивание', view_image: 'Изображение', send_file: 'Отправка файла', phone_take_photo: 'Фото', phone_list_files: 'Телефон', phone_read_file: 'Телефон: чтение', phone_write_file: 'Телефон: запись', phone_to_server: 'Телефон → сервер', server_to_phone: 'Сервер → телефон', phone_delete: 'Телефон: удаление', gdrive_list: 'Google Диск', gdrive_search: 'Поиск в Диске', gdrive_download: 'Диск → сервер', gdrive_upload: 'Сервер → Диск', gdrive_mkdir: 'Диск: папка', gdrive_delete: 'Диск: удаление' };
   function toolSummary(tc) {
     const a = tc.args || {};
     if (Array.isArray(a.packages)) return a.packages.join(' ');
     return a.command || a.file_path || a.path || a.url || a.query || a.pattern || a.phone_path || a.server_path || a.description || (a.from ? a.from + ' → ' + a.to : '') || JSON.stringify(a).slice(0, 120);
   }
 
+  // animate only messages that appear for the first time
+  const anim = (m) => (S.seen.has(m.id) ? '' : 'anim');
   function renderMsgs(forceBottom) {
     const box = $('#msgs');
     if (!box || !S.chat) return;
@@ -329,36 +334,37 @@
     for (const m of S.chat.messages) if (m.role === 'tool') results[m.toolCallId] = m;
     let html = '';
     if (!S.chat.messages.length && !S.run.running) {
-      html = `<div class="empty"><div class="big">💬</div>${S.chat.serverAccess === 'full' ? `<p>🖥 Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code>${S.chat.phoneAccess && S.chat.phoneAccess.full ? '<br>📱 + вся память телефона' : ''}</p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект», «Найди на телефоне все APK и скопируй на сервер».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
+      html = `<div class="empty"><div class="big">${ic(S.chat.serverAccess === 'full' ? 'server' : 'chat', 'xl')}</div>${S.chat.serverAccess === 'full' ? `<p>Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code>${S.chat.phoneAccess && S.chat.phoneAccess.full ? '<br>+ вся память телефона' : ''}</p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект», «Найди на телефоне все APK и скопируй на сервер».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
     }
     for (const m of S.chat.messages) {
       if (m.role === 'user') {
-        html += `<div class="msg user"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}</div></div>`;
+        html += `<div class="msg user ${anim(m)}"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}</div></div>`;
       } else if (m.role === 'assistant') {
-        html += '<div class="msg assistant">';
+        html += `<div class="msg assistant ${anim(m)}">`;
         if (m.content) html += `<div class="md">${md(m.content)}</div>`;
         for (const tc of m.toolCalls || []) {
           const r = results[tc.id];
           const live = S.run.toolOutputs[tc.id];
           const running = !r && S.run.running;
           const open = S.open.has(tc.id);
-          const st = r ? (r.isError ? '<span style="color:var(--err)">✕</span>' : '<span class="ok">✓</span>') : running ? '<span class="spin"></span>' : '<span class="muted">—</span>';
-          html += `<div class="tool ${open ? 'open' : ''} ${r && r.isError ? 'bad' : ''}" data-tc="${esc(tc.id)}">
-            <div class="th"><span>${TOOL_ICONS[tc.name] || '🔧'}</span><span class="nm">${esc(tc.name)}</span><span class="sm">${esc(toolSummary(tc))}</span><span class="st">${st}</span></div>
-            <div class="tb"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
-            ${r ? `<div class="muted">Результат</div><pre>${esc(r.content)}</pre>` : `<div class="muted">Вывод</div><pre id="out-${esc(tc.id)}">${esc(live || '')}</pre>`}</div></div>`;
+          const st = r ? (r.isError ? `<span style="color:var(--err)">${ic('x')}</span>` : `<span class="ok">${ic('check')}</span>`) : running ? '<span class="spin"></span>' : '<span class="muted">—</span>';
+          html += `<div class="tool ${open ? 'open' : ''} ${r && r.isError ? 'bad' : ''} ${running ? 'live' : ''}" data-tc="${esc(tc.id)}">
+            <div class="th"><span class="ti">${ic(TOOL_ICONS[tc.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[tc.name] || tc.name)}</span><span class="sm">${esc(toolSummary(tc))}</span><span class="st">${st}</span><span class="chev">${ic('down', 'sm')}</span></div>
+            <div class="tb"><div><div class="inner"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
+            ${r ? `<div class="muted">Результат</div><pre>${esc(r.content)}</pre>` : `<div class="muted">Вывод</div><pre id="out-${esc(tc.id)}">${esc(live || '')}</pre>`}</div></div></div></div>`;
           if (r && r.images && r.images.length) html += `<div class="imgs">${r.images.map((i) => `<img src="${mediaUrl(i)}" data-full="${i}">`).join('')}</div>`;
-          if (r && r.file) html += `<div class="filecard"><span style="font-size:26px">📦</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">Скачать</button></div>`;
+          if (r && r.file) html += `<div class="filecard"><span class="fi">${ic('package')}</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">${ic('download', 'sm')} Скачать</button></div>`;
         }
         html += '</div>';
       } else if (m.role === 'event') {
-        html += `<div class="msg event ${m.isError ? 'error' : ''}">${esc(m.content)}</div>`;
+        html += `<div class="msg event ${m.isError ? 'error' : ''} ${anim(m)}"><span>${esc(m.content)}</span></div>`;
       }
     }
     if (S.run.running) {
-      html += `<div class="msg assistant"><div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>${S.run.partial ? '' : '<div class="muted"><span class="spin"></span> ИИ работает…</div>'}</div>`;
+      html += `<div class="msg assistant"><div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>${S.run.partial ? '' : '<div class="thinking"><i></i><i></i><i></i><span style="margin-left:6px">ИИ работает…</span></div>'}</div>`;
     }
     box.innerHTML = html;
+    for (const m of S.chat.messages) S.seen.add(m.id);
     box.querySelectorAll('.tool .th').forEach((el) => el.onclick = () => {
       const card = el.parentElement, id = card.dataset.tc;
       if (S.open.has(id)) S.open.delete(id); else S.open.add(id);
@@ -374,11 +380,11 @@
     if (!c) return;
     if (!S.chat) { c.innerHTML = ''; return; }
     const draft = $('#inp') ? $('#inp').value : (localStorage.getItem('kala_draft_' + S.chat.id) || '');
-    c.innerHTML = `<div class="pending" id="pend"></div><div class="row">
-      <button class="icon" id="att" title="Прикрепить">📎</button>
-      ${A ? '<button class="icon" id="cam" title="Фото">📷</button>' : ''}
-      <textarea id="inp" rows="1" placeholder="Задача для ИИ…"></textarea>
-      <button class="send ${S.run.running ? 'stop' : ''}" id="send">${S.run.running ? '■' : '➤'}</button></div>
+    c.innerHTML = `<div class="pending" id="pend"></div><div class="box">
+      <button class="icon" id="att" title="Прикрепить">${ic('clip')}</button>
+      ${A ? `<button class="icon" id="cam" title="Фото">${ic('camera')}</button>` : ''}
+      <textarea id="inp" rows="1" placeholder="Опишите задачу…"></textarea>
+      <button class="send ${S.run.running ? 'stop' : ''}" id="send">${S.run.running ? ic('stop') : ic('send')}</button></div>
       <input type="file" id="fileinp" multiple hidden>`;
     const inp = $('#inp');
     inp.value = draft;
@@ -401,7 +407,7 @@
     if (!p) return;
     p.innerHTML = '';
     S.pending.forEach((a, i) => {
-      const el = h(`<div class="pi">${a.preview ? `<img src="${a.preview}">` : '📄 ' + esc(a.name)}${a.status === 'up' ? ' <span class="spin"></span>' : ''}<button class="icon" style="width:22px;height:22px;font-size:13px">✕</button></div>`);
+      const el = h(`<div class="pi">${a.preview ? `<img src="${a.preview}">` : ic('file', 'sm') + ' ' + esc(a.name)}${a.status === 'up' ? ' <span class="spin"></span>' : ''}<button class="icon" style="width:24px;height:24px">${ic('x', 'sm')}</button></div>`);
       el.querySelector('button').onclick = () => { S.pending.splice(i, 1); renderPending(); };
       p.appendChild(el);
     });
@@ -451,7 +457,7 @@
     return close;
   }
   function page(title, onMount, id) {
-    const p = h(`<div class="page" ${id ? 'id="' + id + '"' : ''}><div class="top"><button class="icon" data-back>←</button><div class="title"><b>${esc(title)}</b></div><span class="extra"></span></div><div class="body"></div></div>`);
+    const p = h(`<div class="page" ${id ? 'id="' + id + '"' : ''}><div class="top"><button class="icon" data-back>${ic('back')}</button><div class="title"><b>${esc(title)}</b></div><span class="extra"></span></div><div class="body"></div></div>`);
     document.body.appendChild(p);
     const close = () => { p.remove(); window.removeEventListener('popstate', onPop); };
     const onPop = () => close();
@@ -475,13 +481,13 @@
     let groups;
     try { groups = await getModels(); } catch (e) { return toast(e.message); }
     if (!groups.length) { toast('Сначала подключите ИИ'); return providersPage(); }
-    sheet(`<h3>Модель</h3><input class="field" id="q" placeholder="Поиск модели…"><div id="ml"></div><button class="btn block" id="rf">↻ Обновить список</button>`, (el, close) => {
+    sheet(`<h3>Модель</h3><input class="field" id="q" placeholder="Поиск модели…"><div id="ml"></div><button class="btn block" id="rf">${ic('refresh', 'sm')} Обновить список</button>`, (el, close) => {
       const draw = () => {
         const q = $('#q', el).value.toLowerCase();
         $('#ml', el).innerHTML = groups.map((g) => {
           const ms = g.models.filter((m) => !q || m.id.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q));
           if (!ms.length && !g.error) return '';
-          return `<div class="mgroup"><h5>${esc(g.name)}</h5>${g.error ? `<div class="err">${esc(g.error)}</div>` : ''}${ms.slice(0, 300).map((m) => `<button class="item ${g.provider === curP && m.id === curM ? 'sel' : ''}" data-p="${esc(g.provider)}" data-m="${esc(m.id)}"><span class="t">${esc(m.name)}${m.name !== m.id ? `<small>${esc(m.id)}</small>` : ''}</span>${g.provider === curP && m.id === curM ? '✓' : ''}</button>`).join('')}</div>`;
+          return `<div class="mgroup"><h5>${esc(g.name)}</h5>${g.error ? `<div class="err">${esc(g.error)}</div>` : ''}${ms.slice(0, 300).map((m) => `<button class="item ${g.provider === curP && m.id === curM ? 'sel' : ''}" data-p="${esc(g.provider)}" data-m="${esc(m.id)}"><span class="t">${esc(m.name)}${m.name !== m.id ? `<small>${esc(m.id)}</small>` : ''}</span>${g.provider === curP && m.id === curM ? ic('check', 'sm') : ''}</button>`).join('')}</div>`;
         }).join('');
         el.querySelectorAll('[data-m]').forEach((b) => b.onclick = () => { close(); cb(b.dataset.p, b.dataset.m); });
       };
@@ -496,7 +502,7 @@
     return `<label class="sw"><input type="checkbox" id="pfull" ${pa.full ? 'checked' : ''}> Полный доступ ко всей памяти телефона</label>
       <div id="pfold">${PHONE_FOLDERS.map(([n, p]) => `<label class="sw"><input type="checkbox" data-pf="${p}" ${pa.folders.includes(p) ? 'checked' : ''}> ${n} <span class="muted">${p}</span></label>`).join('')}
       ${pa.folders.filter((f) => !PHONE_FOLDERS.some((x) => x[1] === f)).map((p) => `<label class="sw"><input type="checkbox" data-pf="${esc(p)}" checked> <span class="muted">${esc(p)}</span></label>`).join('')}</div>
-      <div class="row"><input class="field grow" id="pother" placeholder="Другая папка: /storage/emulated/0/…"><button class="btn small" id="padd">＋</button></div>
+      <div class="row"><input class="field grow" id="pother" placeholder="Другая папка: /storage/emulated/0/…"><button class="btn small" id="padd">${ic('plus', 'sm')}</button></div>
       ${A ? '<button class="btn small" id="pperm">Выдать приложению разрешение Android на файлы</button>' : '<div class="muted">Доступ к телефону работает только из Android-приложения Kala.</div>'}`;
   }
   function bindPhoneAccess(el) {
@@ -512,7 +518,7 @@
 
   function maxAccessHtml() {
     if (!S.user || !S.user.admin) return '';
-    return `<button class="btn primary block" id="maxacc" style="margin:4px 0 6px">⚡ Сервер + телефон: весь VPS и вся память телефона</button>`;
+    return `<button class="btn primary block" id="maxacc" style="margin:4px 0 6px">${ic('zap', 'sm')} Сервер + телефон: весь VPS и вся память</button>`;
   }
   function bindMaxAccess(el) {
     const b = $('#maxacc', el);
@@ -530,8 +536,8 @@
     const full = c && c.serverAccess === 'full';
     if (!S.user || !S.user.admin) return '';
     return `<div class="muted" style="margin-top:12px">Где работает ИИ</div>
-      <label class="sw"><input type="radio" name="sacc" value="project" ${full ? '' : 'checked'}> 📁 В папке проекта</label>
-      <label class="sw"><input type="radio" name="sacc" value="full" ${full ? 'checked' : ''}> 🖥 Весь сервер (VPS, root) — ИИ может всё: файлы, службы, nginx, пакеты</label>
+      <label class="opt"><input type="radio" name="sacc" value="project" ${full ? '' : 'checked'}><span class="oi">${ic('folder', 'sm')}</span><span><b>Папка проекта</b><small>ИИ работает внутри своей папки</small></span></label>
+      <label class="opt"><input type="radio" name="sacc" value="full" ${full ? 'checked' : ''}><span class="oi">${ic('server', 'sm')}</span><span><b>Весь сервер (VPS, root)</b><small>Файлы, службы, nginx, пакеты — всё</small></span></label>
       <input class="field" id="sdir" placeholder="Стартовая папка на сервере" value="${esc((c && c.serverDir) || '/root')}" style="${full ? '' : 'display:none'}">`;
   }
   function bindServerAccess(el) {
@@ -560,11 +566,11 @@
       <div class="muted" style="margin-top:12px">Папка проекта на сервере</div>
       <input class="field" id="proj" list="projs" placeholder="Новая папка (например my-game) или выберите">
       <datalist id="projs">${projects.projects.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
-      <div class="row wrap">${projects.projects.slice(0, 12).map((p) => `<button class="btn small" data-pj="${esc(p)}">📁 ${esc(p)}</button>`).join('')}</div>
+      <div class="row wrap">${projects.projects.slice(0, 12).map((p) => `<button class="btn small" data-pj="${esc(p)}">${ic('folder', 'sm')} ${esc(p)}</button>`).join('')}</div>
       <div class="muted" style="margin-top:12px">Доступ к памяти телефона</div>
       ${phoneAccessHtml({ full: false, folders: [] })}
       <button class="btn primary block" id="create" style="margin-top:14px">Создать чат</button>`, (el, close) => {
-      const drawSel = () => { $('#msel', el).innerHTML = sel ? `🧠 ${esc(sel.m)} <span class="muted">${esc((groups.find((g) => g.provider === sel.p) || {}).name || '')}</span> ▾` : 'Выбрать модель ▾'; };
+      const drawSel = () => { $('#msel', el).innerHTML = sel ? `${ic('cpu', 'sm')} <span class="grow" style="text-align:left">${esc(sel.m)} <span class="muted">${esc((groups.find((g) => g.provider === sel.p) || {}).name || '')}</span></span> ${ic('down', 'sm')}` : 'Выбрать модель ▾'; };
       drawSel();
       $('#msel', el).onclick = () => pickModel(sel && sel.p, sel && sel.m, (p, m) => { sel = { p, m }; drawSel(); });
       el.querySelectorAll('[data-pj]').forEach((b) => b.onclick = () => { $('#proj', el).value = b.dataset.pj; });
@@ -587,11 +593,11 @@
     const c = S.chat;
     sheet(`<h3>Настройки чата</h3>
       <input class="field" id="ctitle" value="${esc(c.title)}" placeholder="Название">
-      <div class="muted">Модель</div><button class="btn block" id="cm">🧠 ${esc(c.model)} ▾</button>
+      <div class="muted">Модель</div><button class="btn block" id="cm">${ic('cpu', 'sm')} ${esc(c.model)} ${ic('down', 'sm')}</button>
       ${maxAccessHtml()}
       ${serverAccessHtml(c)}
       <div class="muted" style="margin-top:10px">Папка проекта</div>
-      <div class="row"><input class="field grow" id="cproj" value="${esc(c.project || c.workspace.split('/').pop())}"><button class="btn small" id="cfiles">📁</button></div>
+      <div class="row"><input class="field grow" id="cproj" value="${esc(c.project || c.workspace.split('/').pop())}"><button class="btn small" id="cfiles">${ic('folder', 'sm')}</button></div>
       <div class="muted" style="margin-top:10px">Доступ к памяти телефона</div>
       ${phoneAccessHtml(c.phoneAccess || { full: false, folders: [] })}
       <button class="btn primary block" id="csave">Сохранить</button>
@@ -601,7 +607,7 @@
       bindMaxAccess(el);
       $('#cm', el).onclick = () => pickModel(c.provider, c.model, async (p, m) => {
         await api('/chats/' + c.id, { method: 'PATCH', body: { provider: p, model: m } });
-        c.provider = p; c.model = m; $('#cm', el).textContent = '🧠 ' + m + ' ▾'; renderHeader();
+        c.provider = p; c.model = m; $('#cm', el).innerHTML = ic('cpu', 'sm') + ' ' + esc(m) + ' ' + ic('down', 'sm'); renderHeader();
       });
       $('#cfiles', el).onclick = () => { close(); filesPage(c.workspace); };
       $('#csave', el).onclick = async () => {
@@ -624,14 +630,18 @@
 
   // ---------------- providers page ----------------
   function providersPage() { page('Подключения ИИ', (body) => { body.id = 'provbody'; renderProviders(); }, 'provpage'); }
+  const PROV_ICONS = { 'claude-code': 'terminal', anthropic: 'spark', openrouter: 'globe', antigravity: 'spark', opencode: 'terminal', openai: 'cpu', ollama: 'server', custom: 'plug' };
   async function renderProviders() {
     const body = $('#provbody');
     if (!body) return;
     let d;
     try { d = await api('/providers'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
-    body.innerHTML = '<p class="muted">Подключите один или несколько ИИ. После подключения их модели появятся при создании чата.</p>';
+    body.innerHTML = '<div class="label" style="margin-top:0">Файлы</div>';
+    body.appendChild(await gdriveCard());
+    body.appendChild(h('<div class="label">Модели ИИ</div>'));
+    body.appendChild(h('<p class="muted" style="margin:0 0 10px">Подключите один или несколько ИИ — их модели появятся при создании чата.</p>'));
     for (const p of d.providers) {
-      const el = h(`<div class="prov ${p.connected ? 'on' : ''}"><h4>${esc(p.name)} ${p.connected ? '<span class="ok">● подключено</span>' : ''}</h4><p>${esc(p.desc)}</p><div class="act"></div></div>`);
+      const el = h(`<div class="prov ${p.connected ? 'on' : ''}"><h4><span class="pi">${ic(PROV_ICONS[p.id] || 'cpu', 'sm')}</span>${esc(p.name)} ${p.connected ? '<span class="badge">подключено</span>' : ''}</h4><p>${esc(p.desc)}</p><div class="act"></div></div>`);
       const act = $('.act', el);
       if (p.connected) {
         act.innerHTML = `<div class="row wrap"><span class="tag">${esc(p.via || '')} ${esc(p.keyHint)}</span><button class="btn small" data-a="models">Модели</button><button class="btn small danger" data-a="off">Отключить</button></div>`;
@@ -669,7 +679,7 @@
         const needKey = p.auth !== 'none';
         act.innerHTML = `
           ${p.auth === 'oauth' ? '<button class="btn primary block" data-a="oauth">Войти через браузер</button><div class="muted" style="margin:8px 0 0">или вставьте ключ вручную:</div>' : ''}
-          ${p.keyUrl ? `<button class="btn block" data-a="getkey">🔑 Войти и получить ключ</button>` : ''}
+          ${p.keyUrl ? `<button class="btn block" data-a="getkey">${ic('key', 'sm')} Войти и получить ключ</button>` : ''}
           ${p.auth === 'key+url' || p.id === 'ollama' ? `<input class="field" data-a="url" placeholder="Base URL (https://…/v1)" value="${esc(p.baseUrl || '')}">` : ''}
           ${needKey ? '<input class="field" data-a="key" placeholder="API-ключ" autocomplete="off">' : ''}
           <button class="btn ${p.auth === 'oauth' ? '' : 'primary'} block" data-a="save">Подключить</button>`;
@@ -683,6 +693,43 @@
       body.appendChild(el);
     }
   }
+  async function gdriveCard() {
+    let g;
+    try { g = await api('/gdrive'); } catch (e) { return h(`<div class="prov"><div class="err">${esc(e.message)}</div></div>`); }
+    const el = h(`<div class="prov ${g.connected ? 'on' : ''}"><h4><span class="pi">${ic('drive', 'sm')}</span>Google Диск ${g.connected ? '<span class="badge">подключено</span>' : ''}</h4>
+      <p>${g.connected ? 'Аккаунт: <b style="color:var(--fg)">' + esc(g.email || '') + '</b>. ИИ может искать, скачивать, загружать и упорядочивать файлы в вашем Диске.' : 'ИИ получит доступ ко всем файлам и папкам вашего Google Диска: найти, скачать на сервер, обработать, загрузить обратно.'}</p>
+      <div class="act"></div></div>`);
+    const act = $('.act', el);
+    if (g.connected) {
+      act.innerHTML = `<div class="row wrap"><button class="btn small" data-a="browse">${ic('folder', 'sm')} Обзор</button><button class="btn small" data-a="re">${ic('refresh', 'sm')} Переподключить</button><button class="btn small danger" data-a="off">Отключить</button></div>`;
+      $('[data-a=browse]', act).onclick = async () => { try { const r = await api('/gdrive/list?folder=root'); sheet(`<h3>Мой диск</h3><pre style="white-space:pre-wrap;font:12px var(--mono);color:var(--fg2)">${esc(r.text)}</pre>`); } catch (e) { toast(e.message); } };
+      $('[data-a=re]', act).onclick = async () => { try { const r = await api('/gdrive/connect', { body: {} }); openExternal(r.url); } catch (e) { toast(e.message); } };
+      $('[data-a=off]', act).onclick = async () => { if (!confirm('Отключить Google Диск?')) return; await api('/gdrive', { method: 'DELETE' }); renderProviders(); };
+      return el;
+    }
+    act.innerHTML = `
+      <details ${g.configured ? '' : 'open'}><summary>Как получить ключи Google (один раз, ~3 минуты)</summary>
+        <ol>
+          <li>Откройте <a href="https://console.cloud.google.com/projectcreate" data-ext="1">Google Cloud</a> и создайте проект (любое имя).</li>
+          <li>Включите <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" data-ext="1">Google Drive API</a> → «Включить».</li>
+          <li><a href="https://console.cloud.google.com/auth/branding" data-ext="1">Экран согласия OAuth</a>: тип «Внешний», имя Kala, ваша почта. В разделе «Аудитория» нажмите <b>«Опубликовать»</b> (иначе вход слетает через 7 дней).</li>
+          <li><a href="https://console.cloud.google.com/auth/clients/create" data-ext="1">Создайте клиент OAuth</a>: тип <b>«Веб-приложение»</b>, в «Разрешённые URI перенаправления» добавьте:<br><code>${esc(g.redirectUri)}</code> <button class="btn small" data-a="copy" style="margin-top:4px">Копировать</button></li>
+          <li>Скопируйте Client ID и Client Secret сюда и нажмите «Войти через Google». Если Google покажет «Приложение не проверено» — «Дополнительно» → «Перейти в Kala».</li>
+        </ol>
+      </details>
+      <input class="field" data-a="cid" placeholder="${g.configured ? 'Client ID сохранён (' + esc(g.clientIdHint) + ')' : 'Client ID (….apps.googleusercontent.com)'}" autocapitalize="none">
+      <input class="field" data-a="csec" placeholder="${g.configured ? 'Client Secret сохранён' : 'Client Secret'}" autocapitalize="none">
+      <button class="btn primary block" data-a="go">${ic('drive', 'sm')} Войти через Google</button>`;
+    $('[data-a=copy]', act).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(g.redirectUri).then(() => toast('Скопировано'), () => toast(g.redirectUri)); };
+    $('[data-a=go]', act).onclick = async () => {
+      try {
+        const r = await api('/gdrive/connect', { body: { clientId: $('[data-a=cid]', act).value, clientSecret: $('[data-a=csec]', act).value } });
+        openExternal(r.url); toast('Войдите в Google и разрешите доступ');
+      } catch (e) { toast(e.message); }
+    };
+    return el;
+  }
+
   async function connect(p, body) {
     toast('Проверяю подключение…');
     try { const r = await api('/providers/' + p.id, { body }); toast(`${p.name} подключён: ${r.models} моделей`); S.models = null; renderProviders(); }
@@ -693,28 +740,28 @@
   function filesPage(startPath) {
     let cur = startPath || S.root;
     page('Файлы на сервере', (body, close, extra) => {
-      extra.innerHTML = (S.user && S.user.admin ? '<button class="icon" id="froot" title="Весь сервер">🖥</button>' : '') + '<button class="icon" id="fup">⬆️</button><button class="icon" id="fmk">＋</button><input type="file" id="fupi" multiple hidden>';
+      extra.innerHTML = (S.user && S.user.admin ? `<button class="icon" id="froot" title="Весь сервер">${ic('server')}</button>` : '') + `<button class="icon" id="fup">${ic('upload')}</button><button class="icon" id="fmk">${ic('plus')}</button><input type="file" id="fupi" multiple hidden>`;
       const draw = async () => {
         let r;
         try { r = await api('/fs/list?path=' + encodeURIComponent(cur)); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
         cur = r.path;
         body.innerHTML = `<div class="crumbs">${esc(cur)}</div>`;
         if (cur !== '/') {
-          const up = h('<div class="fsrow"><span>⬆️</span><span class="n">..</span></div>');
+          const up = h(`<div class="fsrow"><span class="fi">${ic('back')}</span><span class="n">..</span></div>`);
           up.onclick = () => { cur = cur.replace(/\/[^/]+\/?$/, '') || '/'; draw(); };
           body.appendChild(up);
         }
         for (const it of r.items) {
           const full = cur.replace(/\/$/, '') + '/' + it.name;
-          const el = h(`<div class="fsrow"><span>${it.dir ? '📁' : '📄'}</span><span class="n">${esc(it.name)}</span><span class="muted">${it.dir ? '' : fmtSize(it.size)}</span><button class="icon" data-m>⋮</button></div>`);
+          const el = h(`<div class="fsrow"><span class="fi">${ic(it.dir ? 'folder' : /\.(png|jpe?g|gif|webp)$/i.test(it.name) ? 'image' : /\.(apk|zip|tar|gz|pck)$/i.test(it.name) ? 'package' : 'file')}</span><span class="n">${esc(it.name)}</span><span class="muted">${it.dir ? '' : fmtSize(it.size)}</span><button class="icon" data-m>${ic('more')}</button></div>`);
           el.onclick = (e) => {
             if (e.target.closest('[data-m]')) return;
             if (it.dir) { cur = full; draw(); } else viewFile(full, it);
           };
           $('[data-m]', el).onclick = () => sheet(`<h3>${esc(it.name)}</h3>
-            ${it.dir ? '' : '<button class="btn block" data-x="dl">⬇️ Скачать на телефон</button>'}
-            ${S.chat ? '<button class="btn block" data-x="ask">💬 Упомянуть в чате</button>' : ''}
-            <button class="btn danger block" data-x="del">🗑 Удалить</button>`, (sh, cl) => {
+            ${it.dir ? '' : `<button class="btn block" data-x="dl">${ic('download', 'sm')} Скачать на телефон</button>`}
+            ${S.chat ? `<button class="btn block" data-x="ask">${ic('chat', 'sm')} Упомянуть в чате</button>` : ''}
+            <button class="btn danger block" data-x="del">${ic('trash', 'sm')} Удалить</button>`, (sh, cl) => {
             if ($('[data-x=dl]', sh)) $('[data-x=dl]', sh).onclick = () => { cl(); downloadFile(full, it.name); };
             if ($('[data-x=ask]', sh)) $('[data-x=ask]', sh).onclick = () => { cl(); close(); const i = $('#inp'); if (i) { i.value += (i.value ? ' ' : '') + full; i.focus(); } };
             $('[data-x=del]', sh).onclick = async () => { if (!confirm('Удалить ' + it.name + '?')) return; cl(); try { await api('/fs?path=' + encodeURIComponent(full), { method: 'DELETE' }); draw(); } catch (e) { toast(e.message); } };
@@ -741,7 +788,7 @@
     let r;
     try { r = await api('/fs/read?path=' + encodeURIComponent(full)); } catch (e) { return toast(e.message); }
     page(it.name, (body, close, extra) => {
-      extra.innerHTML = '<button class="icon" id="fsave">💾</button><button class="icon" id="fdl">⬇️</button>';
+      extra.innerHTML = `<button class="icon" id="fsave">${ic('save')}</button><button class="icon" id="fdl">${ic('download')}</button>`;
       body.innerHTML = '<textarea class="code" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>';
       const ta = $('textarea', body);
       ta.value = r.content;

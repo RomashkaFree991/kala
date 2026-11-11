@@ -9,6 +9,7 @@ const store = require('./store');
 const providers = require('./providers');
 const llm = require('./llm');
 const tools = require('./tools');
+const gdrive = require('./gdrive');
 const { MAX_AGENT_STEPS, PORT, DATA_DIR } = require('./config');
 
 const runs = new Map(); // key uid:chatId -> run
@@ -62,6 +63,7 @@ ${mode}
 - Отвечай на языке пользователя (обычно русский). Кратко поясняй, что делаешь.
 - Действуй сам: создавай/правь файлы, запускай команды, проверяй результат, исправляй ошибки, пока задача не будет выполнена.
 - Для Android: собирай через gradle (./gradlew assembleDebug или assembleRelease), для Godot: godot --headless --export-release. Готовый APK отдай через send_file.
+- Google Диск (${gdrive.isConnected(user.id) ? 'ПОДКЛЮЧЁН' : 'не подключён — если нужен, попроси подключить в меню → Подключения'}): gdrive_list, gdrive_search, gdrive_download, gdrive_upload, gdrive_mkdir, gdrive_delete. Чтобы работать с файлом из Диска — скачай его на сервер, обработай и при необходимости загрузи обратно.
 - Сервер и телефон можно использовать вместе: например скопировать файл с телефона на сервер (phone_to_server), обработать/собрать его там и вернуть на телефон (server_to_phone) или прислать через send_file. Если телефон не в сети — попроси пользователя открыть приложение Kala.
 - Долгие серверы запускай с background=true. Не используй интерактивные команды (добавляй -y и т.п.).`;
 }
