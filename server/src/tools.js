@@ -249,8 +249,8 @@ async function exec(ctx, name, args) {
       }
       case 'gdrive_list': return { content: clip(await gdrive.list(ctx.uid, args.folder)) };
       case 'gdrive_search': return { content: clip(await gdrive.search(ctx.uid, args.query)) };
-      case 'gdrive_download': return { content: await gdrive.download(ctx.uid, args.file, abs(ctx, args.server_path), ctx.root) };
-      case 'gdrive_upload': return { content: await gdrive.upload(ctx.uid, abs(ctx, args.server_path), args.folder, args.name, ctx.root) };
+      case 'gdrive_download': return { content: await gdrive.download(ctx.uid, args.file, abs(ctx, args.server_path), ctx.root, ctx.signal) };
+      case 'gdrive_upload': return { content: await gdrive.upload(ctx.uid, abs(ctx, args.server_path), args.folder, args.name, ctx.root, ctx.signal) };
       case 'gdrive_mkdir': return { content: await gdrive.mkdir(ctx.uid, args.name, args.parent) };
       case 'gdrive_delete': return { content: await gdrive.trash(ctx.uid, args.file) };
       case 'phone_take_photo': {

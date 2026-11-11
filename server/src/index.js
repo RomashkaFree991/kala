@@ -135,6 +135,8 @@ api.post('/gdrive/app', wrap((req, res) => {
   res.json({ ok: true, url: gdrive.authUrl(req.user.id, googleRedirect(req)) });
 }));
 api.delete('/gdrive', (req, res) => { gdrive.disconnect(req.user.id); res.json({ ok: true }); });
+api.post('/gdrive/quick/start', wrap(async (req, res) => res.json({ url: await gdrive.rcloneLoginStart(req.user.id) })));
+api.post('/gdrive/quick/finish', wrap(async (req, res) => { await gdrive.rcloneLoginFinish(req.user.id, req.body.url); broadcast(req.user.id, { t: 'providers_changed' }); res.json({ ok: true }); }));
 api.get('/gdrive/list', wrap(async (req, res) => res.json({ text: await gdrive.list(req.user.id, req.query.folder) })));
 
 api.get('/models', wrap(async (req, res) => {

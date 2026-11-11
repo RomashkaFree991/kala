@@ -697,13 +697,13 @@
     let g;
     try { g = await api('/gdrive'); } catch (e) { return h(`<div class="prov"><div class="err">${esc(e.message)}</div></div>`); }
     const el = h(`<div class="prov ${g.connected ? 'on' : ''}"><h4><span class="pi">${ic('drive', 'sm')}</span>Google Диск ${g.connected ? '<span class="badge">подключено</span>' : ''}</h4>
-      <p>${g.connected ? 'Аккаунт: <b style="color:var(--fg)">' + esc(g.email || '') + '</b>. ИИ может искать, скачивать, загружать и упорядочивать файлы в вашем Диске.' : 'ИИ получит доступ ко всем файлам и папкам вашего Google Диска: найти, скачать на сервер, обработать, загрузить обратно.'}</p>
+      <p>${g.connected ? 'Аккаунт: <b style="color:var(--fg)">' + esc(g.email || '') + '</b>' + (g.via === 'rclone' ? ' (через rclone)' : '') + '. ИИ может искать, скачивать, загружать и упорядочивать файлы в вашем Диске.' : 'ИИ получит доступ ко всем файлам и папкам вашего Google Диска: найти, скачать на сервер, обработать, загрузить обратно.'}</p>
       <div class="act"></div></div>`);
     const act = $('.act', el);
     if (g.connected) {
       act.innerHTML = `<div class="row wrap"><button class="btn small" data-a="browse">${ic('folder', 'sm')} Обзор</button><button class="btn small" data-a="re">${ic('refresh', 'sm')} Сменить аккаунт</button><button class="btn small danger" data-a="off">Отключить</button></div>`;
       $('[data-a=browse]', act).onclick = async () => { try { const r = await api('/gdrive/list?folder=root'); sheet(`<h3>Мой диск</h3><pre style="white-space:pre-wrap;font:12px var(--mono);color:var(--fg2)">${esc(r.text)}</pre>`); } catch (e) { toast(e.message); } };
-      $('[data-a=re]', act).onclick = async () => { try { const r = await api('/gdrive/connect', { body: {} }); openExternal(r.url); } catch (e) { toast(e.message); } };
+      $('[data-a=re]', act).onclick = async () => { await api('/gdrive', { method: 'DELETE' }); await renderProviders(); const q = document.querySelector('[data-a=quick]'); if (q) q.click(); };
       $('[data-a=off]', act).onclick = async () => { if (!confirm('Отключить Google Диск?')) return; await api('/gdrive', { method: 'DELETE' }); renderProviders(); };
       return el;
     }
@@ -711,17 +711,34 @@
       try { const r = await api('/gdrive/connect', { body: {} }); openExternal(r.url); toast('Выберите аккаунт Google и нажмите «Разрешить»'); }
       catch (e) { toast(e.message); }
     };
-    if (g.configured) {
-      act.innerHTML = `<button class="btn primary block" data-a="go">${ic('drive', 'sm')} Войти через Google</button>
-        ${S.user && S.user.admin ? '<details><summary>Ключи сервера (' + esc(g.clientIdHint) + ')</summary><div data-a="setup"></div></details>' : ''}`;
-      $('[data-a=go]', act).onclick = login;
-      if ($('[data-a=setup]', act)) $('[data-a=setup]', act).appendChild(gdriveSetup(g));
-    } else if (S.user && S.user.admin) {
-      act.innerHTML = `<p class="muted" style="margin-top:0">Нужно один раз подключить сервер к Google (≈2 минуты). Дальше вход — одна кнопка: выбрали аккаунт → «Разрешить».</p>`;
-      act.appendChild(gdriveSetup(g));
-    } else {
-      act.innerHTML = '<p class="muted">Попросите владельца сервера один раз настроить Google в этом разделе.</p>';
-    }
+    // Main way: one tap via rclone (no Google Cloud setup)
+    act.innerHTML = `<button class="btn primary block" data-a="quick">${ic('drive', 'sm')} Войти через Google</button>
+      <div data-a="qbox" style="display:none">
+        <p class="muted">Выберите аккаунт и нажмите «Разрешить». ${A ? 'Приложение само вернётся сюда.' : ''} Если в конце браузер покажет ошибку «Не удаётся открыть 127.0.0.1» — это нормально: скопируйте адрес этой страницы и вставьте сюда:</p>
+        <input class="field" data-a="qurl" placeholder="http://127.0.0.1:53682/?state=…&code=…" autocapitalize="none">
+        <button class="btn block" data-a="qfin">Готово</button>
+      </div>
+      <details><summary>Свои ключи Google Cloud (для опытных)</summary>
+        ${g.configured ? '<button class="btn block" data-a="go">Войти через свои ключи</button>' : ''}
+        ${S.user && S.user.admin ? '<div data-a="setup"></div>' : ''}
+      </details>`;
+    const finishQuick = async (url) => {
+      try { await api('/gdrive/quick/finish', { body: { url } }); toast('Google Диск подключён ✓'); renderProviders(); }
+      catch (e) { toast(e.message); }
+    };
+    $('[data-a=quick]', act).onclick = async (e) => {
+      const btn = e.currentTarget; btn.disabled = true;
+      try {
+        if (A && A.catchOAuth) nativeAsync('catchOAuth').then((r) => { if (r && r.url) finishQuick(r.url); else if (r && r.error) toast(r.error); });
+        const r = await api('/gdrive/quick/start', { body: {} });
+        $('[data-a=qbox]', act).style.display = '';
+        openExternal(r.url);
+      } catch (err) { toast(err.message); }
+      btn.disabled = false;
+    };
+    $('[data-a=qfin]', act).onclick = () => finishQuick($('[data-a=qurl]', act).value);
+    if ($('[data-a=go]', act)) $('[data-a=go]', act).onclick = login;
+    if ($('[data-a=setup]', act)) $('[data-a=setup]', act).appendChild(gdriveSetup(g));
     return el;
   }
 

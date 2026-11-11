@@ -350,6 +350,11 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** Listens on 127.0.0.1:53682 for the OAuth redirect (rclone Google login) and returns its URL. */
+        @JavascriptInterface public void catchOAuth(String cbId) {
+            startOAuthCatcher(cbId);
+        }
+
         @JavascriptInterface public boolean hasStorage() { return MainActivity.this.hasStorage(); }
         @JavascriptInterface public void requestStorage() { runOnUiThread(MainActivity.this::requestStorage); }
 
@@ -426,6 +431,55 @@ public class MainActivity extends Activity {
         private String noPerm() {
             return "Нет разрешения Android на файлы. В приложении: меню → «Доступ к памяти телефона».";
         }
+    }
+
+    private java.net.ServerSocket oauthServer;
+
+    private void startOAuthCatcher(String cbId) {
+        try { if (oauthServer != null) oauthServer.close(); } catch (Exception ignored) { }
+        new Thread(() -> {
+            JSONObject res = new JSONObject();
+            try (java.net.ServerSocket ss = new java.net.ServerSocket(53682, 5, java.net.InetAddress.getByName("127.0.0.1"))) {
+                oauthServer = ss;
+                ss.setSoTimeout(15 * 60 * 1000);
+                while (true) {
+                    try (java.net.Socket sock = ss.accept()) {
+                        java.io.BufferedReader in = new java.io.BufferedReader(new java.io.InputStreamReader(sock.getInputStream(), "UTF-8"));
+                        String line = in.readLine();
+                        String target = line != null && line.startsWith("GET ") ? line.split(" ")[1] : "/";
+                        boolean ok = target.contains("code=") || target.contains("error=");
+                        String html = "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+                            + "<body style='font-family:sans-serif;background:#0a0a0a;color:#f5f5f5;display:flex;align-items:center;justify-content:center;height:90vh;text-align:center'>"
+                            + "<div><h2>" + (ok ? "✓ Готово" : "Kala") + "</h2><p>Вернитесь в приложение Kala</p><p><a style='color:#fff' href='kala://connected'>Открыть Kala</a></p></div>"
+                            + "<script>setTimeout(function(){location.href='kala://connected'},500)</script></body>";
+                        byte[] body = html.getBytes("UTF-8");
+                        java.io.OutputStream out = sock.getOutputStream();
+                        out.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: " + body.length + "\r\nConnection: close\r\n\r\n").getBytes("UTF-8"));
+                        out.write(body);
+                        out.flush();
+                        if (ok) {
+                            res.put("url", "http://127.0.0.1:53682" + target);
+                            break;
+                        }
+                    }
+                }
+            } catch (java.net.SocketTimeoutException e) {
+                try { res.put("error", "Время входа истекло"); } catch (Exception ignored) { }
+            } catch (Exception e) {
+                if (oauthServer == null || !oauthServer.isClosed()) {
+                    try { res.put("error", "Не удалось принять ответ Google: " + e.getMessage()); } catch (Exception ignored) { }
+                }
+            }
+            oauthServer = null;
+            if (res.has("url")) {
+                runOnUiThread(() -> {
+                    Intent i = new Intent(this, MainActivity.class);
+                    i.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    startActivity(i);
+                });
+            }
+            if (res.length() > 0) callback(cbId, res);
+        }).start();
     }
 
     private static void deleteRec(File f) {

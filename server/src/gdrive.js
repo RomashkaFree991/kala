@@ -274,4 +274,51 @@ async function trash(uid, ref) {
   return `«${f.name}» перемещён в корзину Google Диска (можно восстановить 30 дней)`;
 }
 
-module.exports = { getApp, setApp, status, authUrl, finish, disconnect, list, search, download, upload, mkdir, trash, isConnected: (uid) => { const c = getConf(uid); return !!(c && c.refreshToken); } };
+// ---- dispatch: rclone login (no setup) takes priority, else own Google client ----
+const rclone = require('./rclone');
+const viaRclone = (uid) => rclone.isConnected(uid);
+const apiConnected = (uid) => { const c = getConf(uid); return !!(c && c.refreshToken); };
+
+function fullStatus(uid, redirectUri) {
+  const st = status(uid, redirectUri);
+  if (viaRclone(uid)) return { ...st, connected: true, via: 'rclone', email: st.email || 'аккаунт Google' };
+  return { ...st, via: apiConnected(uid) ? 'api' : null };
+}
+function disconnectAll(uid) { rclone.disconnect(uid); disconnect(uid); }
+
+async function dl(uid, ref, dest, root, signal) {
+  if (!viaRclone(uid)) return download(uid, ref, dest, root);
+  if (!root || rfs.exists(path.dirname(dest)) && (() => { try { fs.accessSync(path.dirname(dest), fs.constants.W_OK); return true; } catch { return false; } })()) return rclone.download(uid, ref, dest, signal);
+  const tmp = path.join(DATA_DIR, 'tmp', 'gd_' + crypto.randomBytes(5).toString('hex'));
+  fs.mkdirSync(tmp, { recursive: true });
+  const msg = await rclone.download(uid, ref, tmp, signal);
+  const got = fs.readdirSync(tmp);
+  const src = got.length === 1 && !fs.statSync(path.join(tmp, got[0])).isDirectory() ? path.join(tmp, got[0]) : tmp;
+  rfs.mv(src, dest);
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  return msg.replace(tmp, dest);
+}
+async function ul(uid, file, folder, name, root, signal) {
+  if (!viaRclone(uid)) return upload(uid, file, folder, name, root);
+  try { fs.accessSync(file, fs.constants.R_OK); return await rclone.upload(uid, file, folder, name, signal); }
+  catch (e) {
+    if (e.code !== 'EACCES') throw e;
+    const tmp = path.join(DATA_DIR, 'tmp', 'gu_' + crypto.randomBytes(5).toString('hex'), name || path.basename(file));
+    fs.mkdirSync(path.dirname(tmp), { recursive: true });
+    rfs.sudo(['cp', '-r', '--', file, tmp]); rfs.sudo(['chown', '-R', String(process.getuid()), path.dirname(tmp)]);
+    try { return await rclone.upload(uid, tmp, folder, name || path.basename(file), signal); } finally { fs.rmSync(path.dirname(tmp), { recursive: true, force: true }); }
+  }
+}
+
+module.exports = {
+  getApp, setApp, authUrl, finish,
+  status: fullStatus, disconnect: disconnectAll,
+  isConnected: (uid) => viaRclone(uid) || apiConnected(uid),
+  rcloneLoginStart: (uid) => rclone.loginStart(uid),
+  rcloneLoginFinish: (uid, u) => rclone.loginFinish(uid, u),
+  list: (uid, f) => (viaRclone(uid) ? rclone.list(uid, f) : list(uid, f)),
+  search: (uid, q) => (viaRclone(uid) ? rclone.search(uid, q) : search(uid, q)),
+  download: dl, upload: ul,
+  mkdir: (uid, n, p) => (viaRclone(uid) ? rclone.mkdir(uid, n, p) : mkdir(uid, n, p)),
+  trash: (uid, f) => (viaRclone(uid) ? rclone.trash(uid, f) : trash(uid, f)),
+};
