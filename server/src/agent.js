@@ -136,8 +136,38 @@ function reorderMidRun(messages) {
   return out.map((m) => (m.midRun && m.role === 'user' ? { ...m, content: '[Новое сообщение пользователя, пока ты работал — учти его]: ' + m.content } : m));
 }
 
+// Make the history valid for every API: each tool call gets exactly one result right after
+// its assistant message; orphan results are dropped; duplicate ids are made unique.
+function repairToolPairs(messages) {
+  const out = [];
+  const seenIds = new Set();
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === 'tool') continue; // handled together with their assistant message
+    if (m.role !== 'assistant' || !(m.toolCalls && m.toolCalls.length)) { out.push(m); continue; }
+    // results that belong to this message: following tool messages (until the next non-tool message)
+    const following = [];
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === 'tool') following.push(messages[j++]);
+    const calls = m.toolCalls.filter((tc) => tc && tc.name).map((tc) => {
+      let id = String(tc.id || '');
+      if (!id || seenIds.has(id)) id = (id || 'call') + '_' + i + '_' + Math.random().toString(36).slice(2, 7);
+      seenIds.add(id);
+      return { ...tc, id, origId: tc.id };
+    });
+    out.push({ ...m, toolCalls: calls.map(({ origId, ...tc }) => tc) });
+    const used = new Set();
+    for (const tc of calls) {
+      const r = following.find((x, k) => !used.has(k) && x.toolCallId === tc.origId && (used.add(k), true));
+      out.push(r ? { ...r, toolCallId: tc.id } : { role: 'tool', toolCallId: tc.id, name: tc.name, content: 'Результата нет: действие было прервано (перезапуск сервера или остановка). Если нужно — повтори его.', isError: true });
+    }
+    i = j - 1;
+  }
+  return out;
+}
+
 function normalizeForApi(messages) {
-  messages = reorderMidRun(messages);
+  messages = repairToolPairs(reorderMidRun(messages));
   const out = [];
   for (const m of messages) {
     if (!m.cli) { if (m.role !== 'event') out.push(m); continue; }
@@ -210,6 +240,7 @@ async function runApi(uid, user, chat, run) {
         continue;
       }
       run.toolOutputs[tc.id] = '';
+      if (!tc.name) { addMessage(uid, chat, { role: 'tool', toolCallId: tc.id, name: 'unknown', content: 'Пустое имя инструмента', isError: true }); continue; }
       setStatus(uid, chat.id, run, label(tc.name) + (summary(tc.name, tc.args) ? ': ' + summary(tc.name, tc.args) : ''));
       const ctx = {
         uid, user, chat, ...ctxBase(chat), env: toolEnv(uid), signal: run.abort.signal, phoneCall: phoneCaller(uid),
