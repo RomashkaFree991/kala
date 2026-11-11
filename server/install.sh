@@ -8,6 +8,10 @@ set -uo pipefail
 
 DOMAIN="${1:-skkapap.fun}"
 EMAIL="${2:-admin@${DOMAIN}}"
+# --takeover: disable other nginx sites that use the same domain (they are backed up, not deleted)
+TAKEOVER="${KALA_TAKEOVER:-0}"
+for a in "$@"; do [ "$a" = "--takeover" ] && TAKEOVER=1; done
+[ "$EMAIL" = "--takeover" ] && EMAIL="admin@${DOMAIN}"
 APP_USER="kala"
 APP_DIR="/opt/kala"
 DATA_DIR="/var/lib/kala"
@@ -23,11 +27,26 @@ export DEBIAN_FRONTEND=noninteractive
 command -v apt-get >/dev/null || die "Нужен Ubuntu/Debian (apt-get)"
 
 # install packages one by one so a missing package never stops the install
-apt_try() { for p in "$@"; do apt-get install -y -q "$p" >/dev/null 2>&1 || warn "пакет $p не установлен"; done; }
+APT_LOG=/var/log/kala-apt.log
+apt_try() {
+  for p in "$@"; do
+    if ! apt-get install -y -q "$p" >"$APT_LOG.last" 2>&1; then
+      warn "пакет $p не установлен: $(grep -E '^(E:|dpkg:)' "$APT_LOG.last" | head -2 | tr '\n' ' ')"
+      cat "$APT_LOG.last" >> "$APT_LOG"
+    fi
+  done
+}
 port_busy() { ss -ltnH "( sport = :$1 )" 2>/dev/null | grep -q .; }
 
 ########################## ЧАСТЬ 1: сервер ##########################
 log "1/6 Базовые пакеты"
+FREE_MB="$(df -Pm / | awk 'NR==2{print $4}')"
+echo "Свободно на диске: ${FREE_MB} МБ"
+[ "${FREE_MB:-0}" -lt 6000 ] && warn "Мало места на диске (<6 ГБ). Android SDK + Godot требуют ~5 ГБ."
+# finish interrupted installs / wait for unattended-upgrades
+for i in $(seq 1 60); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; [ $i = 1 ] && echo "Жду, пока освободится apt (идут автообновления)…"; sleep 5; done
+dpkg --configure -a >/dev/null 2>&1 || true
+apt-get -f install -y -q >/dev/null 2>&1 || true
 apt-get update -y -q || warn "apt-get update завершился с ошибкой"
 apt_try curl wget git unzip zip ca-certificates gnupg rsync iproute2 nginx certbot python3-certbot-nginx dnsutils
 
@@ -125,11 +144,26 @@ EOF
 ln -sfn /etc/nginx/sites-available/kala /etc/nginx/sites-enabled/kala
 rm -f /etc/nginx/sites-enabled/default
 # Other nginx sites that claim the same domain would hide Kala
+CONFLICTS=""
 for f in /etc/nginx/sites-enabled/* /etc/nginx/conf.d/*.conf; do
   [ -e "$f" ] || continue
   [ "$(readlink -f "$f")" = /etc/nginx/sites-available/kala ] && continue
-  grep -qE "server_name[^;]*\b$DOMAIN\b" "$f" 2>/dev/null && warn "В $f тоже указан $DOMAIN — он может перехватывать запросы. Удалите его, если это старый сайт."
+  grep -qE "server_name[^;]*[[:space:]]$DOMAIN[[:space:];]" "$f" 2>/dev/null && CONFLICTS="$CONFLICTS $f"
 done
+if [ -n "$CONFLICTS" ]; then
+  if [ "$TAKEOVER" = 1 ]; then
+    mkdir -p /etc/nginx/kala-disabled
+    for f in $CONFLICTS; do
+      mv "$f" /etc/nginx/kala-disabled/ && warn "Отключён сайт $f (копия: /etc/nginx/kala-disabled/$(basename "$f"))"
+    done
+  else
+    warn "Домен $DOMAIN уже занят другим сайтом nginx:$CONFLICTS"
+    echo "  Из-за этого https://$DOMAIN открывает старый сайт, а не Kala."
+    echo "  Отдать домен Kala (старый сайт отключится, копия сохранится):"
+    echo "    sudo bash $SRC_DIR/install.sh $DOMAIN $EMAIL --takeover"
+    die "Установка остановлена из-за конфликта домена"
+  fi
+fi
 nginx -t || die "Ошибка в конфигурации nginx (см. выше)"
 systemctl enable nginx >/dev/null 2>&1
 systemctl restart nginx || die "nginx не запустился: systemctl status nginx"
