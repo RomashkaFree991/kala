@@ -183,3 +183,26 @@ textarea.code{width:100%;min-height:70vh;background:#050505;border:1px solid var
 #toast.on{opacity:1;transform:translate(-50%,0)}
 .tag{font-size:11px;padding:2px 8px;border-radius:8px;background:var(--bg3);border:1px solid var(--line);color:var(--fg2)}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* live progress */
+.statusline{display:flex;align-items:center;gap:10px;color:var(--fg2);font-size:13px;padding:6px 2px;cursor:default}
+.statusline .thinking{padding:0}
+.statusline #stext{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+details.think{border:1px solid var(--line);border-radius:12px;background:var(--bg2);margin:6px 0;overflow:hidden}
+details.think summary{cursor:pointer;padding:8px 12px;color:var(--fg2);font-size:13px;display:flex;align-items:center;gap:8px;list-style:none}
+details.think summary::-webkit-details-marker{display:none}
+details.think .tt{padding:0 12px 10px;color:var(--fg2);font-size:12.5px;white-space:pre-wrap;max-height:220px;overflow:auto;line-height:1.5}
+details.think.live summary{color:var(--fg)}
+/* browser */
+#bmini{position:fixed;right:12px;bottom:92px;width:168px;z-index:15;background:var(--bg2);border:1px solid var(--line2);border-radius:16px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.6);animation:pop .3s var(--ease);cursor:pointer}
+#bmini .bh{display:flex;align-items:center;gap:6px;font-size:12px;padding:4px 4px 4px 10px;color:var(--fg2)}
+#bmini .bh .icon{width:26px;height:26px;margin-left:auto}
+#bmini img{display:block;width:100%;min-height:60px;background:#000}
+.bbody{padding:10px!important;display:flex;flex-direction:column;gap:8px}
+.bbar{display:flex;align-items:center;gap:4px}
+.bbar .field{margin:0;padding:10px 12px;font-size:13px}
+.bwrap{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#000;min-height:200px;display:flex;align-items:center;justify-content:center}
+.bwrap img{display:block;width:100%;touch-action:none;user-select:none;-webkit-user-drag:none}
+.bwait{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:8px}
+.bkeys{display:flex;align-items:center;gap:4px}
+.bkeys .field{margin:0;padding:10px 12px;font-size:13px}

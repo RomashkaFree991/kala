@@ -109,17 +109,42 @@
     }
   });
 
+  function newRun(running, r) {
+    r = r || {};
+    return { running: !!running, partial: r.partial || '', toolOutputs: r.toolOutputs || {}, status: r.status || '', thinking: r.thinking || '', drafts: r.drafts || {}, form: r.form || null };
+  }
+  // show partially-streamed tool arguments in a readable way
+  function draftText(a) {
+    return String(a).replace(/\\n/g, '\n').replace(/\\t/g, '  ').replace(/\\"/g, '"').replace(/\\\\/g, '\\').slice(-4000);
+  }
   function onEvent(m) {
     if (m.t === 'phone_request') return handlePhone(m);
+    if (m.t === 'browser_frame') return onBrowserFrame(m);
+    if (m.t === 'browser_nav') { const u = $('#burl'); if (u && document.activeElement !== u) u.value = m.url; return; }
+    if (m.t === 'browser_closed') { hideBrowserMini(); return; }
     if (m.t === 'chats_changed') return loadChats();
     if (m.t === 'providers_changed') { S.models = null; if ($('#provpage')) renderProviders(); return; }
     if (!S.chat || m.chatId !== S.chat.id) return;
     if (m.t === 'chat_updated') return loadChat(S.chat.id, true);
-    if (m.t === 'run_start') { S.run = { running: true, partial: '', toolOutputs: {} }; renderMsgs(); renderComposer(); updateConn(); }
-    else if (m.t === 'run_end') { S.run = { running: false, partial: '', toolOutputs: {} }; renderMsgs(); renderComposer(); updateConn(); }
+    if (m.t === 'run_start') { S.run = newRun(true); renderMsgs(); renderComposer(); updateConn(); }
+    else if (m.t === 'run_end') { S.run = newRun(false); closeFormSheet(); renderMsgs(); renderComposer(); updateConn(); }
+    else if (m.t === 'status') { S.run.status = m.text; const el = $('#stext'); if (el) el.textContent = m.text; else scheduleRender(); }
+    else if (m.t === 'thinking') {
+      S.run.thinking = (S.run.thinking || '') + m.text;
+      const el = $('#thinktext');
+      if (el) { el.textContent = S.run.thinking.slice(-6000); el.scrollTop = el.scrollHeight; } else scheduleRender();
+    } else if (m.t === 'tool_draft') { S.run.drafts[m.id] = { name: m.name, args: '' }; scheduleRender(); }
+    else if (m.t === 'tool_draft_delta') {
+      const d = S.run.drafts[m.id]; if (!d) return;
+      d.args = (d.args + m.text).slice(-30000);
+      const el = document.getElementById('draft-' + m.id);
+      if (el) { const stick = nearBottom(); el.textContent = draftText(d.args); el.scrollTop = el.scrollHeight; if (stick) toBottom(); }
+    } else if (m.t === 'form') { S.run.form = m.form; showFormSheet(m.form); }
+    else if (m.t === 'form_done') { if (S.run.form && S.run.form.id === m.id) S.run.form = null; closeFormSheet(m.id); }
+    else if (m.t === 'browser_active') showBrowserMini();
     else if (m.t === 'msg') {
       if (!S.chat.messages.find((x) => x.id === m.message.id)) S.chat.messages.push(m.message);
-      if (m.message.role === 'assistant') S.run.partial = '';
+      if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; }
       if (m.message.role === 'tool') delete S.run.toolOutputs[m.message.toolCallId];
       scheduleRender();
     } else if (m.t === 'delta') {
@@ -223,6 +248,7 @@
         <button class="icon" id="menu">${ic('menu')}</button>
         <div class="title" id="ttl"><b>Kala</b><span class="chip" id="mchip">выберите чат</span></div>
         <span class="dot" id="conn"></span>
+        <button class="icon" id="bbtn" title="Браузер ИИ">${ic('globe')}</button>
         <button class="icon" id="csettings" title="Настройки чата">${ic('settings')}</button>
       </div>
       <div id="msgs"></div>
@@ -232,6 +258,7 @@
     $('#menu').onclick = () => toggleDrawer(true);
     $('#scrim').onclick = () => toggleDrawer(false);
     $('#csettings').onclick = () => S.chat ? chatSettings() : toggleDrawer(true);
+    $('#bbtn').onclick = () => browserPage();
     $('#mchip').onclick = () => S.chat && pickModel(S.chat.provider, S.chat.model, async (p, m) => {
       await api('/chats/' + S.chat.id, { method: 'PATCH', body: { provider: p, model: m } });
       S.chat.provider = p; S.chat.model = m; renderHeader(); toast('Модель: ' + m);
@@ -256,6 +283,9 @@
       <div class="foot">
         <button class="item" id="nprov">${ic('plug')}<span class="t">Подключения</span></button>
         <button class="item" id="nfiles">${ic('folder')}<span class="t">Файлы на сервере</span></button>
+        <button class="item" id="nbrowser">${ic('globe')}<span class="t">Браузер ИИ</span></button>
+        <button class="item" id="nsecrets">${ic('key')}<span class="t">Секреты (.env)</span></button>
+        <button class="item" id="nskills">${ic('spark')}<span class="t">Скиллы и память</span></button>
         ${A ? `<button class="item" id="nperm">${ic('phone')}<span class="t">Доступ к памяти телефона</span></button>` : ''}
         ${A ? `<button class="item" id="nsrv">${ic('globe')}<span class="t">Сменить сервер</span></button>` : ''}
         <button class="item" id="nout">${ic('logout')}<span class="t">Выйти</span></button>
@@ -269,6 +299,9 @@
     $('#newchat').onclick = () => { toggleDrawer(false); newChat(); };
     $('#nprov').onclick = () => { toggleDrawer(false); providersPage(); };
     $('#nfiles').onclick = () => { toggleDrawer(false); filesPage(S.chat ? S.chat.workspace : ''); };
+    $('#nbrowser').onclick = () => { toggleDrawer(false); browserPage(); };
+    $('#nsecrets').onclick = () => { toggleDrawer(false); secretsPage(); };
+    $('#nskills').onclick = () => { toggleDrawer(false); skillsPage(); };
     if ($('#nperm')) $('#nperm').onclick = () => { A.requestStorage(); };
     if ($('#nsrv')) $('#nsrv').onclick = () => A.changeServer();
     $('#nout').onclick = () => { if (confirm('Выйти из аккаунта?')) logout(); };
@@ -304,7 +337,8 @@
       const r = await api('/chats/' + id);
       const switching = !S.chat || S.chat.id !== id;
       S.chat = r.chat;
-      S.run = r.run.running ? { running: true, partial: r.run.partial || '', toolOutputs: r.run.toolOutputs || {} } : { running: false, partial: '', toolOutputs: {} };
+      S.run = newRun(r.run.running, r.run);
+      if (S.run.form) showFormSheet(S.run.form);
       localStorage.setItem('kala_last_chat', id);
       renderHeader();
       renderMsgs(switching || !keepScroll);
@@ -316,11 +350,13 @@
   let rq = false;
   function scheduleRender() { if (rq) return; rq = true; requestAnimationFrame(() => { rq = false; renderMsgs(); }); }
 
-  const TOOL_ICONS = { install_packages: 'package', phone_find: 'search', bash: 'terminal', read_file: 'filetext', write_file: 'pencil', edit_file: 'pencil', list_dir: 'folder', delete_path: 'trash', move_path: 'move', web_fetch: 'globe', web_search: 'search', download_file: 'download', view_image: 'image', send_file: 'package', phone_take_photo: 'camera', phone_list_files: 'phone', phone_read_file: 'phone', phone_write_file: 'phone', phone_to_server: 'upload', server_to_phone: 'download', phone_delete: 'trash', gdrive_list: 'drive', gdrive_search: 'drive', gdrive_download: 'download', gdrive_upload: 'upload', gdrive_mkdir: 'drive', gdrive_delete: 'trash', Bash: 'terminal', Read: 'filetext', Write: 'pencil', Edit: 'pencil', MultiEdit: 'pencil', Glob: 'folder', Grep: 'search', LS: 'folder', WebFetch: 'globe', WebSearch: 'search', TodoWrite: 'list', Task: 'cpu' };
-  const TOOL_NAMES = { install_packages: 'Установка', phone_find: 'Поиск на телефоне', bash: 'Терминал', read_file: 'Чтение', write_file: 'Запись файла', edit_file: 'Правка', list_dir: 'Папка', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос', web_search: 'Поиск', download_file: 'Скачивание', view_image: 'Изображение', send_file: 'Отправка файла', phone_take_photo: 'Фото', phone_list_files: 'Телефон', phone_read_file: 'Телефон: чтение', phone_write_file: 'Телефон: запись', phone_to_server: 'Телефон → сервер', server_to_phone: 'Сервер → телефон', phone_delete: 'Телефон: удаление', gdrive_list: 'Google Диск', gdrive_search: 'Поиск в Диске', gdrive_download: 'Диск → сервер', gdrive_upload: 'Сервер → Диск', gdrive_mkdir: 'Диск: папка', gdrive_delete: 'Диск: удаление' };
+  const TOOL_ICONS = { ask_user: 'key', secrets_list: 'key', write_env_file: 'key', service_create: 'server', service_control: 'server', service_list: 'server', skill_install: 'download', skill_create: 'spark', skill_read: 'filetext', skill_list: 'list', skill_delete: 'trash', memory_save: 'spark', memory_rewrite: 'spark', browser_open: 'globe', browser_snapshot: 'image', browser_click: 'globe', browser_type: 'pencil', browser_press: 'globe', browser_scroll: 'globe', browser_back: 'back', browser_eval: 'terminal', browser_upload: 'upload', browser_close: 'x', install_packages: 'package', phone_find: 'search', bash: 'terminal', read_file: 'filetext', write_file: 'pencil', edit_file: 'pencil', list_dir: 'folder', delete_path: 'trash', move_path: 'move', web_fetch: 'globe', web_search: 'search', download_file: 'download', view_image: 'image', send_file: 'package', phone_take_photo: 'camera', phone_list_files: 'phone', phone_read_file: 'phone', phone_write_file: 'phone', phone_to_server: 'upload', server_to_phone: 'download', phone_delete: 'trash', gdrive_list: 'drive', gdrive_search: 'drive', gdrive_download: 'download', gdrive_upload: 'upload', gdrive_mkdir: 'drive', gdrive_delete: 'trash', Bash: 'terminal', Read: 'filetext', Write: 'pencil', Edit: 'pencil', MultiEdit: 'pencil', Glob: 'folder', Grep: 'search', LS: 'folder', WebFetch: 'globe', WebSearch: 'search', TodoWrite: 'list', Task: 'cpu' };
+  const TOOL_NAMES = { ask_user: 'Запрос данных', secrets_list: 'Секреты', write_env_file: '.env файл', service_create: 'Запуск службы', service_control: 'Служба', service_list: 'Службы', skill_install: 'Установка скилла', skill_create: 'Новый скилл', skill_read: 'Скилл', skill_list: 'Скиллы', skill_delete: 'Удаление скилла', memory_save: 'Запомнил', memory_rewrite: 'Память', browser_open: 'Браузер', browser_snapshot: 'Скриншот', browser_click: 'Клик', browser_type: 'Ввод текста', browser_press: 'Клавиша', browser_scroll: 'Прокрутка', browser_back: 'Назад', browser_eval: 'Скрипт в браузере', browser_upload: 'Загрузка файла', browser_close: 'Браузер закрыт', install_packages: 'Установка', phone_find: 'Поиск на телефоне', bash: 'Терминал', read_file: 'Чтение', write_file: 'Запись файла', edit_file: 'Правка', list_dir: 'Папка', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос', web_search: 'Поиск', download_file: 'Скачивание', view_image: 'Изображение', send_file: 'Отправка файла', phone_take_photo: 'Фото', phone_list_files: 'Телефон', phone_read_file: 'Телефон: чтение', phone_write_file: 'Телефон: запись', phone_to_server: 'Телефон → сервер', server_to_phone: 'Сервер → телефон', phone_delete: 'Телефон: удаление', gdrive_list: 'Google Диск', gdrive_search: 'Поиск в Диске', gdrive_download: 'Диск → сервер', gdrive_upload: 'Сервер → Диск', gdrive_mkdir: 'Диск: папка', gdrive_delete: 'Диск: удаление' };
   function toolSummary(tc) {
     const a = tc.args || {};
     if (Array.isArray(a.packages)) return a.packages.join(' ');
+    if (tc.name === 'ask_user') return a.title || '';
+    if (a.element != null && !a.text) return '#' + a.element;
     return a.command || a.file_path || a.path || a.url || a.query || a.pattern || a.phone_path || a.server_path || a.description || (a.from ? a.from + ' → ' + a.to : '') || JSON.stringify(a).slice(0, 120);
   }
 
@@ -341,6 +377,7 @@
         html += `<div class="msg user ${anim(m)}"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}</div></div>`;
       } else if (m.role === 'assistant') {
         html += `<div class="msg assistant ${anim(m)}">`;
+        if (m.reasoning) html += `<details class="think"><summary>${ic('spark', 'sm')} Размышления</summary><div class="tt">${esc(m.reasoning)}</div></details>`;
         if (m.content) html += `<div class="md">${md(m.content)}</div>`;
         for (const tc of m.toolCalls || []) {
           const r = results[tc.id];
@@ -361,7 +398,14 @@
       }
     }
     if (S.run.running) {
-      html += `<div class="msg assistant"><div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>${S.run.partial ? '' : '<div class="thinking"><i></i><i></i><i></i><span style="margin-left:6px">ИИ работает…</span></div>'}</div>`;
+      html += `<div class="msg assistant">`;
+      if (S.run.thinking) html += `<details class="think live" open><summary>${ic('spark', 'sm')} Размышляет…</summary><div class="tt" id="thinktext">${esc(S.run.thinking.slice(-6000))}</div></details>`;
+      html += `<div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>`;
+      for (const [id, d] of Object.entries(S.run.drafts || {})) {
+        html += `<div class="tool open live"><div class="th"><span class="ti">${ic(TOOL_ICONS[d.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[d.name] || d.name)}</span><span class="sm">готовит…</span><span class="st"><span class="spin"></span></span></div>
+          <div class="tb"><div><div class="inner"><pre id="draft-${esc(id)}">${esc(draftText(d.args))}</pre></div></div></div></div>`;
+      }
+      html += `<div class="statusline" id="sline"><span class="thinking"><i></i><i></i><i></i></span><span id="stext">${esc(S.run.status || 'ИИ работает…')}</span></div></div>`;
     }
     box.innerHTML = html;
     for (const m of S.chat.messages) S.seen.add(m.id);
@@ -371,6 +415,7 @@
       card.classList.toggle('open');
     });
     box.querySelectorAll('[data-dl]').forEach((b) => b.onclick = () => downloadFile(b.dataset.dl, b.dataset.name));
+    const sl = $('#sline'); if (sl) sl.onclick = () => { if (S.run.form) showFormSheet(S.run.form); };
     box.querySelectorAll('img').forEach((im) => im.onclick = () => openExternal(im.src));
     if (stick) toBottom();
   }
@@ -832,6 +877,164 @@
       ta.value = r.content;
       $('#fsave', extra).onclick = async () => { try { await api('/fs/write', { body: { path: full, content: ta.value } }); toast('Сохранено'); } catch (e) { toast(e.message); } };
       $('#fdl', extra).onclick = () => downloadFile(full, it.name);
+    });
+  }
+
+  // ---------------- forms (ask_user) ----------------
+  let formEl = null;
+  function closeFormSheet(id) { if (formEl && (!id || formEl.dataset.id === id)) { formEl.remove(); formEl = null; } }
+  function showFormSheet(form) {
+    if (formEl && formEl.dataset.id === form.id) return;
+    closeFormSheet();
+    const chatId = S.chat.id;
+    const close = sheet(`<h3>${ic('key')} ${esc(form.title || 'Нужны данные')}</h3>
+      ${form.message ? `<p class="muted">${esc(form.message)}</p>` : ''}
+      <form id="kform">${form.fields.map((f) => `<div class="label">${esc(f.label || f.name)}${f.optional ? ' <span class="muted">(необязательно)</span>' : ''}</div>
+        ${f.options && f.options.length ? `<div class="row wrap">${f.options.map((o, i) => `<label class="opt" style="flex:1;min-width:40%"><input type="radio" name="${esc(f.name)}" value="${esc(o)}" ${i ? '' : 'checked'}><span><b>${esc(o)}</b></span></label>`).join('')}</div>`
+        : `<div class="row"><input class="field grow" name="${esc(f.name)}" type="${f.secret ? 'password' : 'text'}" placeholder="${esc(f.placeholder || f.name)}" autocomplete="off" autocapitalize="none" spellcheck="false">${f.secret ? `<button type="button" class="icon" data-eye>${ic('eye', 'sm')}</button>` : ''}</div>`}`).join('')}
+      ${form.fields.some((f) => f.secret) ? `<p class="muted">${ic('key', 'sm')} Секреты хранятся зашифрованно на вашем сервере и не показываются ИИ — он использует их как переменные окружения${form.env_file ? ' и запишет в ' + esc(form.env_file) : ''}.</p>` : ''}
+      <button class="btn primary block" type="submit">Отправить</button>
+      <button class="btn block" type="button" data-cancel>Отклонить</button></form>`, (el, cl) => {
+      formEl = el.parentElement; formEl.dataset.id = form.id;
+      el.querySelectorAll('[data-eye]').forEach((b) => b.onclick = () => { const i = b.previousElementSibling; i.type = i.type === 'password' ? 'text' : 'password'; });
+      const send = async (cancelled) => {
+        const values = {};
+        if (!cancelled) for (const f of form.fields) {
+          const inp = el.querySelector(`[name="${CSS.escape(f.name)}"]:checked`) || el.querySelector(`[name="${CSS.escape(f.name)}"]`);
+          values[f.name] = inp ? inp.value : '';
+          if (!values[f.name] && !f.optional) { toast('Заполните: ' + (f.label || f.name)); return; }
+        }
+        try { await api('/chats/' + chatId + '/form', { body: { id: form.id, values, cancelled } }); cl(); formEl = null; }
+        catch (e) { toast(e.message); }
+      };
+      $('#kform', el).onsubmit = (e) => { e.preventDefault(); send(false); };
+      $('[data-cancel]', el).onclick = () => send(true);
+      setTimeout(() => { const i = el.querySelector('input.field'); if (i) i.focus(); }, 300);
+    });
+  }
+
+  // ---------------- browser (live screen) ----------------
+  S.bview = false;
+  function setBrowserView(on) { if (S.bview === on) return; S.bview = on; if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'browser_view', on })); }
+  function binput(ev) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ t: 'browser_input', ev })); }
+  let lastFrame = null;
+  function onBrowserFrame(m) {
+    lastFrame = m;
+    const src = 'data:image/jpeg;base64,' + m.data;
+    const a = $('#bimg'); if (a) a.src = src;
+    const b = $('#bmini img'); if (b) b.src = src;
+  }
+  function showBrowserMini() {
+    if ($('#bpage') || $('#bmini')) return;
+    const el = h(`<div id="bmini"><div class="bh"><span class="dot busy"></span> Браузер ИИ<button class="icon" data-x>${ic('x', 'sm')}</button></div><img alt=""></div>`);
+    document.body.appendChild(el);
+    if (lastFrame) el.querySelector('img').src = 'data:image/jpeg;base64,' + lastFrame.data;
+    el.onclick = (e) => { if (e.target.closest('[data-x]')) { hideBrowserMini(); return; } el.remove(); browserPage(); };
+    setBrowserView(true);
+  }
+  function hideBrowserMini() { const el = $('#bmini'); if (el) el.remove(); if (!$('#bpage')) setBrowserView(false); }
+
+  async function browserPage() {
+    const old = $('#bmini'); if (old) old.remove();
+    try { await api('/browser/open', { body: {} }); } catch (e) { toast(e.message); }
+    page('Браузер ИИ', (body, close, extra) => {
+      body.classList.add('bbody');
+      extra.innerHTML = `<button class="icon" data-mode title="Телефон / компьютер">${ic('phone')}</button><button class="icon" data-off title="Закрыть браузер">${ic('x')}</button>`;
+      body.innerHTML = `<div class="bbar"><button class="icon" data-k="back">${ic('back')}</button><button class="icon" data-k="reload">${ic('refresh')}</button>
+          <input class="field" id="burl" placeholder="Адрес или поиск" autocapitalize="none" inputmode="url"></div>
+        <div class="bwrap"><img id="bimg" alt="">${lastFrame ? '' : '<div class="muted bwait"><span class="spin"></span> Запуск браузера…</div>'}</div>
+        <div class="bkeys"><input class="field grow" id="btext" placeholder="Текст для ввода на странице…" autocapitalize="none">
+          <button class="btn small" data-k="type">Ввести</button><button class="icon" data-k="Backspace" title="Стереть">${ic('back', 'sm')}</button><button class="icon" data-k="Enter" title="Enter">${ic('send', 'sm')}</button></div>
+        <p class="muted" style="text-align:center;margin:6px 0 0">Нажмите на экран — клик. Проведите вверх/вниз — прокрутка. Здесь можно войти в свои аккаунты: ИИ потом будет ими пользоваться.</p>`;
+      const pg = body.parentElement; pg.id = 'bpage';
+      const img = $('#bimg', body);
+      if (lastFrame) img.src = 'data:image/jpeg;base64,' + lastFrame.data;
+      img.onload = () => { const w = $('.bwait', body); if (w) w.remove(); };
+      setBrowserView(true);
+      // pointer → click / scroll
+      let start = null;
+      img.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY, t: Date.now() }; });
+      img.addEventListener('pointerup', (e) => {
+        if (!start) return;
+        const rc = img.getBoundingClientRect();
+        const dy = e.clientY - start.y, dx = e.clientX - start.x;
+        if (Math.abs(dy) < 10 && Math.abs(dx) < 10) binput({ type: 'click', x: (e.clientX - rc.left) / rc.width, y: (e.clientY - rc.top) / rc.height });
+        else binput({ type: 'scroll', x: (start.x - rc.left) / rc.width, y: (start.y - rc.top) / rc.height, dy: -dy * ((lastFrame ? lastFrame.h : 800) / rc.height) });
+        start = null;
+      });
+      img.addEventListener('wheel', (e) => { e.preventDefault(); const rc = img.getBoundingClientRect(); binput({ type: 'scroll', x: (e.clientX - rc.left) / rc.width, y: (e.clientY - rc.top) / rc.height, dy: e.deltaY }); }, { passive: false });
+      const url = $('#burl', body);
+      url.onkeydown = (e) => { if (e.key === 'Enter') { const v = url.value.trim(); binput({ type: 'nav', url: /\s/.test(v) || !/\./.test(v) ? 'https://www.google.com/search?q=' + encodeURIComponent(v) : v }); url.blur(); } };
+      body.querySelectorAll('[data-k]').forEach((b) => b.onclick = () => {
+        const k = b.dataset.k;
+        if (k === 'back' || k === 'reload') binput({ type: k });
+        else if (k === 'type') { const t = $('#btext', body); if (t.value) { binput({ type: 'text', text: t.value }); t.value = ''; } }
+        else binput({ type: 'key', key: k });
+      });
+      $('#btext', body).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const t = e.target; if (t.value) binput({ type: 'text', text: t.value }); else binput({ type: 'key', key: 'Enter' }); t.value = ''; } };
+      $('[data-mode]', extra).onclick = async () => { S.bmode = S.bmode === 'mobile' ? 'desktop' : 'mobile'; lastFrame = null; try { await api('/browser/open', { body: { mode: S.bmode } }); setBrowserView(false); setBrowserView(true); toast(S.bmode === 'mobile' ? 'Мобильная версия' : 'Версия для компьютера'); } catch (e) { toast(e.message); } };
+      $('[data-off]', extra).onclick = async () => { if (!confirm('Закрыть браузер? (входы в аккаунты сохранятся)')) return; await api('/browser/close', { body: {} }); lastFrame = null; close(); };
+      const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); setBrowserView(false); } });
+      obs.observe(document.body, { childList: true });
+    });
+  }
+
+  // ---------------- secrets (.env) ----------------
+  function secretsPage() {
+    page('Секреты (.env)', async (body) => {
+      const draw = async () => {
+        let d; try { d = await api('/secrets'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Токены ботов, API-ключи, пароли. Хранятся зашифрованно на сервере и доступны ИИ как переменные окружения (<code>$ИМЯ</code>) во всех командах и ботах. Сами значения ИИ не видит.</p>
+          <div id="slist"></div>
+          <div class="label">Добавить</div>
+          <input class="field" id="sname" placeholder="ИМЯ (например BOT_TOKEN)" autocapitalize="characters">
+          <input class="field" id="sval" type="password" placeholder="Значение" autocomplete="off">
+          <button class="btn primary block" id="sadd">${ic('plus', 'sm')} Сохранить</button>
+          <details style="margin-top:14px"><summary class="muted">Вставить .env целиком</summary>
+            <textarea class="field" id="senv" rows="6" placeholder="BOT_TOKEN=123:ABC&#10;OPENAI_API_KEY=sk-..." style="font-family:var(--mono)"></textarea>
+            <button class="btn block" id="simp">Импортировать</button></details>`;
+        const list = $('#slist', body);
+        if (!d.secrets.length) list.innerHTML = '<div class="muted" style="padding:8px 2px">Пока пусто. ИИ сам попросит нужные значения в окне, когда они понадобятся.</div>';
+        for (const x of d.secrets) {
+          const el = h(`<div class="fsrow"><span class="fi">${ic('key')}</span><span class="n"><b style="font-family:var(--mono);font-size:13px">${esc(x.name)}</b><small class="muted" style="display:block">${esc(x.desc || '')} ${esc(x.hint)}</small></span><button class="icon" data-e>${ic('pencil', 'sm')}</button><button class="icon" data-d>${ic('trash', 'sm')}</button></div>`);
+          $('[data-d]', el).onclick = async () => { if (confirm('Удалить ' + x.name + '?')) { await api('/secrets/' + encodeURIComponent(x.name), { method: 'DELETE' }); draw(); } };
+          $('[data-e]', el).onclick = () => { $('#sname', body).value = x.name; $('#sval', body).focus(); };
+          list.appendChild(el);
+        }
+        $('#sadd', body).onclick = async () => {
+          try { await api('/secrets/' + encodeURIComponent($('#sname', body).value.trim()), { method: 'PUT', body: { value: $('#sval', body).value } }); toast('Сохранено'); draw(); }
+          catch (e) { toast(e.message); }
+        };
+        $('#simp', body).onclick = async () => { try { const r = await api('/secrets/import', { body: { text: $('#senv', body).value } }); toast('Импортировано: ' + r.count); draw(); } catch (e) { toast(e.message); } };
+      };
+      draw();
+    });
+  }
+
+  // ---------------- skills & memory ----------------
+  function skillsPage() {
+    page('Скиллы и память', async (body) => {
+      const draw = async () => {
+        let d; try { d = await api('/skills'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<div class="label" style="margin-top:0">Память ИИ</div>
+          <p class="muted" style="margin:0 0 6px">То, что ИИ помнит о вас во всех чатах. Можно править.</p>
+          <textarea class="field" id="mem" rows="7" style="font-size:13px">${esc(d.memory)}</textarea>
+          <button class="btn block" id="msave">${ic('save', 'sm')} Сохранить память</button>
+          <div class="label">Скиллы (${d.skills.length})</div>
+          <p class="muted" style="margin:0 0 6px">Инструкции и скрипты, которые ИИ установил или создал. Используются во всех чатах. Можно попросить в чате: «найди и установи скилл для …».</p>
+          <div id="sklist"></div>
+          <div class="row" style="margin-top:8px"><input class="field grow" id="skurl" placeholder="Ссылка на скилл (GitHub-папка или SKILL.md)" autocapitalize="none"><button class="btn small" id="skadd">${ic('download', 'sm')}</button></div>`;
+        const list = $('#sklist', body);
+        if (!d.skills.length) list.innerHTML = '<div class="muted" style="padding:6px 2px">Скиллов пока нет.</div>';
+        for (const x of d.skills) {
+          const el = h(`<div class="prov" style="padding:12px"><h4 style="font-size:14px"><span class="pi">${ic('spark', 'sm')}</span>${esc(x.name)}<button class="icon" data-d style="margin-left:auto">${ic('trash', 'sm')}</button></h4><p style="margin:6px 0 0">${esc(x.description)}</p>${x.source ? `<small class="muted" style="word-break:break-all">${esc(x.source)}</small>` : ''}</div>`);
+          $('[data-d]', el).onclick = async () => { if (confirm('Удалить скилл ' + x.name + '?')) { await api('/skills/' + encodeURIComponent(x.id), { method: 'DELETE' }); draw(); } };
+          list.appendChild(el);
+        }
+        $('#msave', body).onclick = async () => { await api('/memory', { method: 'PUT', body: { content: $('#mem', body).value } }); toast('Память сохранена'); };
+        $('#skadd', body).onclick = async () => { toast('Устанавливаю…'); try { const r = await api('/skills/install', { body: { source: $('#skurl', body).value } }); toast('Установлен: ' + r.name); draw(); } catch (e) { toast(e.message); } };
+      };
+      draw();
     });
   }
 

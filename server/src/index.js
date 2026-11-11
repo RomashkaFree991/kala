@@ -11,6 +11,9 @@ const providers = require('./providers');
 const agent = require('./agent');
 const rfs = require('./rootfs');
 const gdrive = require('./gdrive');
+const secrets = require('./secrets');
+const skills = require('./skills');
+const browser = require('./browser');
 
 const app = express();
 app.set('trust proxy', true);
@@ -125,6 +128,37 @@ api.post('/claude-login/start', wrap(async (req, res) => {
 }));
 api.post('/claude-login/finish', wrap(async (req, res) => { await providers.claudeLoginFinish(req.user.id, req.body.code); res.json({ ok: true }); }));
 
+// ---------- secrets (.env) ----------
+api.get('/secrets', (req, res) => res.json({ secrets: secrets.list(req.user.id) }));
+api.put('/secrets/:name', wrap((req, res) => { secrets.set(req.user.id, req.params.name, req.body.value, req.body.desc); res.json({ ok: true }); }));
+api.delete('/secrets/:name', (req, res) => { secrets.remove(req.user.id, req.params.name); res.json({ ok: true }); });
+// paste a whole .env
+api.post('/secrets/import', wrap((req, res) => {
+  let n = 0;
+  for (const line of String(req.body.text || '').split('\n')) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!m) continue;
+    let v = m[2]; if (/^(["']).*\1$/.test(v)) v = v.slice(1, -1);
+    secrets.set(req.user.id, m[1], v); n++;
+  }
+  res.json({ ok: true, count: n });
+}));
+
+// ---------- skills & memory ----------
+api.get('/skills', (req, res) => res.json({ skills: skills.list(req.user.id).map(({ dir, ...x }) => x), memory: skills.memory(req.user.id) }));
+api.post('/skills/install', wrap(async (req, res) => res.json(await skills.install(req.user.id, req.body.source))));
+api.delete('/skills/:id', wrap((req, res) => { skills.remove(req.user.id, req.params.id); res.json({ ok: true }); }));
+api.put('/memory', (req, res) => { skills.memorySet(req.user.id, req.body.content); res.json({ ok: true }); });
+
+// ---------- browser ----------
+api.post('/browser/open', wrap(async (req, res) => {
+  await browser.get(req.user.id, req.body.mode);
+  if (req.body.url) await browser.input(req.user.id, { type: 'nav', url: req.body.url });
+  res.json({ ok: true });
+}));
+api.post('/browser/close', wrap(async (req, res) => { await browser.close(req.user.id); res.json({ ok: true }); }));
+api.get('/browser/status', (req, res) => res.json({ open: browser.isOpen(req.user.id) }));
+
 // ---------- Google Drive ----------
 const googleRedirect = (req) => publicUrl(req) + '/api/oauth/google/callback';
 api.get('/gdrive', (req, res) => res.json(gdrive.status(req.user.id, googleRedirect(req))));
@@ -211,6 +245,7 @@ api.post('/chats/:id/messages', wrap(async (req, res) => {
   await agent.startRun(req.user, req.params.id, req.body.text, req.body.images || []);
   res.json({ ok: true });
 }));
+api.post('/chats/:id/form', wrap((req, res) => { agent.submitForm(req.user.id, req.params.id, req.body.id, req.body.values, !!req.body.cancelled); res.json({ ok: true }); }));
 api.post('/chats/:id/stop', (req, res) => res.json({ ok: agent.stopRun(req.user.id, req.params.id) }));
 
 // ---------- uploads / files ----------
@@ -277,6 +312,7 @@ function broadcast(uid, msg) {
 function broadcastAll(msg) { for (const uid of sockets.keys()) broadcast(uid, msg); }
 
 agent.setBroadcast(broadcast);
+browser.setBroadcast(broadcast);
 agent.setPhoneCaller((uid) => {
   const set = sockets.get(uid);
   if (!set) return null;
@@ -304,6 +340,12 @@ wss.on('connection', (ws, req) => {
     ws.lastSeen = Date.now();
     let m; try { m = JSON.parse(data); } catch { return; }
     if (m.t === 'ping') ws.send('{"t":"pong"}');
+    else if (m.t === 'browser_view') {
+      const on = !!m.on;
+      if (on !== !!ws.viewing) { ws.viewing = on; browser.setViewers(user.id, on ? 1 : -1).catch(() => {}); }
+      const f = on && browser.lastFrame(user.id);
+      if (f) ws.send(JSON.stringify({ t: 'browser_frame', ...f }));
+    } else if (m.t === 'browser_input') browser.input(user.id, m.ev || {});
     else if (m.t === 'phone_response') {
       const p = pendingPhone.get(m.id);
       if (!p) return;
@@ -312,9 +354,10 @@ wss.on('connection', (ws, req) => {
       if (m.ok) p.resolve(m.result || {}); else p.reject(new Error(m.error || 'Ошибка на телефоне'));
     }
   });
-  ws.on('close', () => { const s = sockets.get(user.id); if (s) { s.delete(ws); if (!s.size) sockets.delete(user.id); } });
+  ws.on('close', () => { if (ws.viewing) browser.setViewers(user.id, -1).catch(() => {}); const s = sockets.get(user.id); if (s) { s.delete(ws); if (!s.size) sockets.delete(user.id); } });
 });
 
+server.requestTimeout = 0; // ask_user via MCP can wait for the user a long time
 server.listen(cfg.PORT, cfg.HOST, () => {
   console.log(`Kala server on http://${cfg.HOST}:${cfg.PORT}  data=${cfg.DATA_DIR}  workspaces=${cfg.WORKSPACES_DIR}`);
 });

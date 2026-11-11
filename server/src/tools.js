@@ -10,11 +10,50 @@ const { MAX_TOOL_OUTPUT } = require('./config');
 const { DEFS } = require('./tooldefs');
 const rfs = require('./rootfs');
 const gdrive = require('./gdrive');
+const secrets = require('./secrets');
+const skills = require('./skills');
+const browser = require('./browser');
+const { DATA_DIR } = require('./config');
+
+// ---------- services (systemd) ----------
+const svcName = (n) => { const x = String(n || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); if (!x) throw new Error('Нужно имя службы латиницей'); return 'kala-' + x; };
+const SVC_DIR = path.join(DATA_DIR, 'services');
+function svcCreate(ctx, a) {
+  const unit = svcName(a.name);
+  const cwd = abs(ctx, a.cwd || '.');
+  fs.mkdirSync(SVC_DIR, { recursive: true });
+  const envPath = path.join(SVC_DIR, unit + '.env');
+  fs.writeFileSync(envPath, secrets.envFile(ctx.uid), { mode: 0o600 });
+  const user = a.run_as_root && ctx.root ? 'root' : (os.userInfo().username || 'kala');
+  const pathEnv = process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+  const text = `[Unit]\nDescription=Kala service ${a.name}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nUser=${user}\nWorkingDirectory=${cwd}\nEnvironmentFile=-${envPath}\nEnvironment=PATH=${pathEnv}\nEnvironment=PYTHONUNBUFFERED=1\nExecStart=/bin/bash -lc ${JSON.stringify(String(a.command))}\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n`;
+  rfs.sudo(['sh', '-c', 'cat > "$1"', 'sh', '/etc/systemd/system/' + unit + '.service'], text);
+  rfs.sudo(['systemctl', 'daemon-reload']);
+  rfs.sudo(['systemctl', 'enable', unit]);
+  rfs.sudo(['systemctl', 'restart', unit]);
+  const reg = store.readJson(path.join(SVC_DIR, 'index.json'), {});
+  reg[unit] = { name: a.name, command: a.command, cwd, uid: ctx.uid, createdAt: Date.now() };
+  store.writeJson(path.join(SVC_DIR, 'index.json'), reg);
+  return unit;
+}
+function svcStatus(unit, lines = 30) {
+  let st = '';
+  try { st = rfs.sudo(['systemctl', 'is-active', unit]).toString().trim(); } catch (e) { st = 'inactive/failed'; }
+  let logs = '';
+  try { logs = rfs.sudo(['journalctl', '-u', unit, '-n', String(lines), '--no-pager', '-o', 'cat']).toString(); } catch (e) { logs = e.message; }
+  return `Служба ${unit}: ${st}\n--- последние логи ---\n${logs}`;
+}
+function svcDelete(unit) {
+  try { rfs.sudo(['systemctl', 'disable', '--now', unit]); } catch {}
+  rfs.rm('/etc/systemd/system/' + unit + '.service');
+  rfs.sudo(['systemctl', 'daemon-reload']);
+}
 
 // env vars kept when running commands as root through sudo
 const KEEP_ENV = 'PATH,ANDROID_HOME,ANDROID_SDK_ROOT,JAVA_HOME,PIP_BREAK_SYSTEM_PACKAGES,DEBIAN_FRONTEND,TMPDIR,CI,TERM';
 function shellArgs(ctx, command) {
-  if (ctx.root) return ['sudo', ['-n', '--preserve-env=' + KEEP_ENV, 'bash', '-lc', `cd ${JSON.stringify(ctx.cwd)} 2>/dev/null; ${command}`]];
+  const keep = [KEEP_ENV, ...Object.keys(secrets.values(ctx.uid || '_'))].join(',');
+  if (ctx.root) return ['sudo', ['-n', '--preserve-env=' + keep, 'bash', '-lc', `cd ${JSON.stringify(ctx.cwd)} 2>/dev/null; ${command}`]];
   return ['bash', ['-lc', command]];
 }
 function spawnCwd(ctx) { return ctx.root ? '/' : ctx.cwd; }
@@ -246,6 +285,66 @@ async function exec(ctx, name, args) {
         const st = rfs.stat(f);
         if (st.dir) return { content: 'Это папка, а не файл. Упакуйте её (zip) и отправьте архив.', isError: true };
         return { content: `Файл отправлен пользователю: ${f} (${st.size} байт)`, file: { path: f, name: path.basename(f), size: st.size } };
+      }
+      case 'ask_user': {
+        if (!ctx.askForm) return { content: 'Форма недоступна в этом режиме', isError: true };
+        const fields = (args.fields || []).filter((f) => f && f.name).map((f) => ({ name: String(f.name), label: f.label || f.name, secret: !!f.secret, placeholder: f.placeholder || '', options: f.options, optional: !!f.optional }));
+        if (!fields.length) return { content: 'Нет полей', isError: true };
+        const ans = await ctx.askForm({ title: args.title, message: args.message || '', fields, env_file: args.env_file || '' });
+        if (ans.cancelled) return { content: 'Пользователь закрыл форму без ответа.', isError: true };
+        const shown = [], saved = [];
+        for (const f of fields) {
+          const v = ans.values[f.name];
+          if (v == null || v === '') continue;
+          const looksSecret = f.secret || /TOKEN|KEY|SECRET|PASS|HASH/i.test(f.name);
+          if (secrets.NAME.test(f.name) && (looksSecret || args.env_file)) { try { secrets.set(ctx.uid, f.name, v, f.label); } catch {} }
+          if (looksSecret) saved.push(f.name); else shown.push(`${f.name} = ${v}`);
+        }
+        Object.assign(ctx.env, secrets.values(ctx.uid));
+        let envNote = '';
+        if (args.env_file) {
+          const f = abs(ctx, args.env_file);
+          const names = fields.map((x) => x.name);
+          let existing = ''; try { existing = rfs.readFile(f, ctx.root).toString(); } catch {}
+          const keep = existing.split('\n').filter((l) => l.trim() && !names.some((n) => l.startsWith(n + '='))).join('\n');
+          rfs.writeFile(f, (keep ? keep + '\n' : '') + secrets.envFile(ctx.uid, names), ctx.root);
+          envNote = `\nЗаписано в ${f}.`;
+        }
+        return { content: (shown.length ? 'Ответ пользователя:\n' + shown.join('\n') + '\n' : '') + (saved.length ? `Секреты сохранены (значения скрыты от тебя), доступны как переменные окружения: ${saved.map((n) => '$' + n).join(', ')}` : '') + envNote };
+      }
+      case 'secrets_list': { const l = secrets.list(ctx.uid); return { content: l.length ? l.map((x) => `$${x.name}${x.desc ? ' — ' + x.desc : ''}`).join('\n') : 'Секретов пока нет. Попроси через ask_user.' }; }
+      case 'write_env_file': { const f = abs(ctx, args.path); rfs.writeFile(f, secrets.envFile(ctx.uid, args.names), ctx.root); return { content: 'Записан ' + f + ' (' + (args.names && args.names.length ? args.names.join(', ') : 'все секреты') + ')' }; }
+      case 'service_create': { const unit = svcCreate(ctx, args); await new Promise((r) => setTimeout(r, 2500)); return { content: 'Служба создана и запущена.\n' + svcStatus(unit, 20) }; }
+      case 'service_control': {
+        const unit = svcName(args.name);
+        if (args.action === 'logs' || args.action === 'status') return { content: svcStatus(unit, Math.min(args.lines || 60, 500)) };
+        if (args.action === 'delete') {
+          svcDelete(unit);
+          const reg = store.readJson(path.join(SVC_DIR, 'index.json'), {}); delete reg[unit]; store.writeJson(path.join(SVC_DIR, 'index.json'), reg);
+          return { content: 'Служба ' + unit + ' удалена' };
+        }
+        if (args.action === 'restart' || args.action === 'start') { try { fs.writeFileSync(path.join(SVC_DIR, unit + '.env'), secrets.envFile(ctx.uid), { mode: 0o600 }); } catch {} }
+        rfs.sudo(['systemctl', args.action, unit]);
+        await new Promise((r) => setTimeout(r, 1500));
+        return { content: svcStatus(unit, 15) };
+      }
+      case 'service_list': {
+        const reg = store.readJson(path.join(SVC_DIR, 'index.json'), {});
+        const rows = Object.entries(reg).filter(([, v]) => v.uid === ctx.uid).map(([u, v]) => { let st = '?'; try { st = rfs.sudo(['systemctl', 'is-active', u]).toString().trim(); } catch { st = 'inactive'; } return `${v.name} (${u}): ${st} — ${v.command} в ${v.cwd}`; });
+        return { content: rows.join('\n') || 'Служб пока нет' };
+      }
+      case 'skill_install': { const r = await skills.install(ctx.uid, args.source, args.name); return { content: `Скилл «${r.name}» установлен навсегда (${r.files} файлов) в ${r.dir}. Прочитай его через skill_read("${r.id}").` }; }
+      case 'skill_create': { const r = skills.create(ctx.uid, args.name, args.description, args.content, args.files); return { content: `Скилл «${args.name}» сохранён: ${r.dir}` }; }
+      case 'skill_read': { const r = skills.read(ctx.uid, args.name, args.file); return { content: `Папка скилла: ${r.skill.dir}\nФайлы: ${r.skill.files.join(', ')}\n\n` + clip(r.content) }; }
+      case 'skill_list': { const l = skills.list(ctx.uid); return { content: l.length ? l.map((x) => `${x.id}: ${x.description}`).join('\n') : 'Скиллов пока нет' }; }
+      case 'skill_delete': skills.remove(ctx.uid, args.name); return { content: 'Скилл удалён' };
+      case 'memory_save': skills.memoryAdd(ctx.uid, args.text); return { content: 'Запомнил: ' + args.text };
+      case 'memory_rewrite': skills.memorySet(ctx.uid, args.content); return { content: 'Память обновлена' };
+      case 'browser_open': case 'browser_snapshot': case 'browser_click': case 'browser_type': case 'browser_press':
+      case 'browser_scroll': case 'browser_back': case 'browser_eval': case 'browser_upload': case 'browser_close': {
+        if (name === 'browser_upload') args = { ...args, file: abs(ctx, args.file) };
+        const r = await browser.tool(ctx.uid, name, args, ctx.onBrowser);
+        return { ...r, content: clip(r.content) };
       }
       case 'gdrive_list': return { content: clip(await gdrive.list(ctx.uid, args.folder)) };
       case 'gdrive_search': return { content: clip(await gdrive.search(ctx.uid, args.query)) };

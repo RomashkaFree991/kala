@@ -225,6 +225,10 @@ JHOME="$(dirname "$(dirname "$(readlink -f "$(command -v javac 2>/dev/null || co
 echo "· Claude Code CLI и OpenCode CLI"
 npm install -g @anthropic-ai/claude-code opencode-ai --no-audit --no-fund >/dev/null 2>&1 || warn "CLI не установлены (позже: sudo npm i -g @anthropic-ai/claude-code)"
 
+echo "· Браузер для ИИ (Chromium)"
+node "$APP_DIR/node_modules/playwright-core/cli.js" install-deps chromium >/dev/null 2>&1 || warn "системные библиотеки для Chromium не установлены (ИИ попробует сам)"
+sudo -u "$APP_USER" -H node "$APP_DIR/node_modules/playwright-core/cli.js" install chromium >/dev/null 2>&1 || warn "Chromium не скачан (скачается при первом запуске браузера)"
+
 echo "· Android SDK"
 if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
   mkdir -p "$ANDROID_HOME/cmdline-tools" && cd /tmp && \

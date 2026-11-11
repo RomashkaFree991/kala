@@ -36,6 +36,25 @@ function unzipOne(buf, suffix) {
   throw new Error(suffix + ' not found in zip');
 }
 
+// all entries: [{ name, read() }]
+function unzipEntries(buf) {
+  let eocd = buf.length - 22;
+  while (eocd >= 0 && buf.readUInt32LE(eocd) !== 0x06054b50) eocd--;
+  if (eocd < 0) throw new Error('bad zip');
+  const n = buf.readUInt16LE(eocd + 10);
+  let p = buf.readUInt32LE(eocd + 16);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const method = buf.readUInt16LE(p + 10), csize = buf.readUInt32LE(p + 20);
+    const nl = buf.readUInt16LE(p + 28), el = buf.readUInt16LE(p + 30), cl = buf.readUInt16LE(p + 32);
+    const off = buf.readUInt32LE(p + 42);
+    const name = buf.slice(p + 46, p + 46 + nl).toString();
+    out.push({ name, read() { const lnl = buf.readUInt16LE(off + 26), lel = buf.readUInt16LE(off + 28); const d = buf.slice(off + 30 + lnl + lel, off + 30 + lnl + lel + csize); return method === 0 ? d : zlib.inflateRawSync(d); } });
+    p += 46 + nl + el + cl;
+  }
+  return out;
+}
+
 async function ensure() {
   if (binPath) return binPath;
   if (await which('rclone')) return (binPath = 'rclone');
@@ -178,4 +197,4 @@ async function trash(uid, ref) {
   return `«${ref}» перемещён в корзину Google Диска`;
 }
 
-module.exports = { ensure, isConnected, loginStart, loginFinish, disconnect, list, search, download, upload, mkdir, trash, confPath };
+module.exports = { unzipEntries, ensure, isConnected, loginStart, loginFinish, disconnect, list, search, download, upload, mkdir, trash, confPath };

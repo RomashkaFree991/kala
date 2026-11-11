@@ -10,6 +10,8 @@ const providers = require('./providers');
 const llm = require('./llm');
 const tools = require('./tools');
 const gdrive = require('./gdrive');
+const secrets = require('./secrets');
+const skills = require('./skills');
 const { MAX_AGENT_STEPS, PORT, DATA_DIR } = require('./config');
 
 const runs = new Map(); // key uid:chatId -> run
@@ -23,7 +25,38 @@ const key = (uid, cid) => uid + ':' + cid;
 
 function runState(uid, chatId) {
   const r = runs.get(key(uid, chatId));
-  return r ? { running: true, partial: r.partial, toolOutputs: r.toolOutputs } : { running: false };
+  return r ? { running: true, partial: r.partial, toolOutputs: r.toolOutputs, status: r.status, thinking: r.thinking, drafts: r.drafts, form: r.form ? r.form.public : null } : { running: false };
+}
+
+// ---- live progress: status line, thinking, tool calls being written ----
+const LABELS = { bash: 'Терминал', install_packages: 'Установка пакетов', read_file: 'Чтение файла', write_file: 'Запись файла', edit_file: 'Правка файла', list_dir: 'Просмотр папки', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос в интернет', web_search: 'Поиск в интернете', download_file: 'Скачивание', view_image: 'Просмотр картинки', send_file: 'Отправка файла', ask_user: 'Вопрос вам', service_create: 'Запуск службы', service_control: 'Управление службой', skill_install: 'Установка скилла', skill_create: 'Создание скилла', skill_read: 'Чтение скилла', memory_save: 'Запоминаю', browser_open: 'Браузер: открываю сайт', browser_click: 'Браузер: нажатие', browser_type: 'Браузер: ввод текста', browser_snapshot: 'Браузер: смотрю на страницу', browser_scroll: 'Браузер: прокрутка' };
+const label = (n) => LABELS[n] || (n.startsWith('phone_') ? 'Телефон' : n.startsWith('gdrive_') ? 'Google Диск' : n.startsWith('browser_') ? 'Браузер' : n);
+function summary(name, a) {
+  a = a || {};
+  const v = a.command || a.path || a.file_path || a.url || a.query || a.title || a.name || a.source || (a.packages && a.packages.join(' ')) || a.element || '';
+  return String(v).replace(/\s+/g, ' ').slice(0, 120);
+}
+function setStatus(uid, chatId, run, text) { run.status = text; emit(uid, chatId, { t: 'status', text }); }
+function makeDraftEmitter(uid, chatId, run) {
+  const pend = {};
+  let timer = null;
+  const flush = () => { timer = null; for (const [id, text] of Object.entries(pend)) { emit(uid, chatId, { t: 'tool_draft_delta', id, text }); delete pend[id]; } };
+  return {
+    start(id, name) { run.drafts[id] = { name, args: '' }; emit(uid, chatId, { t: 'tool_draft', id, name, label: label(name) }); setStatus(uid, chatId, run, 'Готовит действие: ' + label(name) + '…'); },
+    delta(id, text) {
+      const d = run.drafts[id]; if (!d) return;
+      d.args += text; if (d.args.length > 40000) d.args = d.args.slice(-20000);
+      pend[id] = (pend[id] || '') + text;
+      if (!timer) timer = setTimeout(flush, 120);
+    },
+    thinking(text) {
+      run.thinking += text; if (run.thinking.length > 30000) run.thinking = run.thinking.slice(-20000);
+      pend.__think = (pend.__think || '') + text;
+      if (!timer) timer = setTimeout(() => { const t = pend.__think; delete pend.__think; if (t) emit(uid, chatId, { t: 'thinking', text: t }); flush(); }, 120);
+      if (!/Размышляет/.test(run.status)) setStatus(uid, chatId, run, 'Размышляет…');
+    },
+    flush,
+  };
 }
 
 function emit(uid, chatId, ev) { broadcast(uid, { ...ev, chatId }); }
@@ -43,6 +76,7 @@ function ctxBase(chat) { return { cwd: workDir(chat), root: isFull(chat), logDir
 
 function systemPrompt(chat, user, phoneOnline) {
   const pa = chat.phoneAccess || {};
+  const secretNames = secrets.list(user.id).map((x) => '$' + x.name);
   const mode = isFull(chat)
     ? `РЕЖИМ: ПОЛНОЕ УПРАВЛЕНИЕ СЕРВЕРОМ (VPS). Все команды и файловые операции выполняются от root. Текущая папка: ${workDir(chat)}. Ты администратор этого сервера: можешь смотреть и менять любые файлы (/etc, /var, /home, /opt…), управлять службами (systemctl), nginx, docker, файрволом, ставить/удалять пакеты, распаковывать архивы, собирать проекты. Перед опасными действиями (удаление данных, перезагрузка, остановка чужих служб, изменение SSH) коротко предупреди пользователя и спроси подтверждение. Не останавливай службу kala и nginx-сайт kala — через них пользователь с тобой общается.
 Папка для проектов по умолчанию: ${chat.workspace}`
@@ -64,8 +98,15 @@ ${mode}
 - Действуй сам: создавай/правь файлы, запускай команды, проверяй результат, исправляй ошибки, пока задача не будет выполнена.
 - Для Android: собирай через gradle (./gradlew assembleDebug или assembleRelease), для Godot: godot --headless --export-release. Готовый APK отдай через send_file.
 - Google Диск (${gdrive.isConnected(user.id) ? 'ПОДКЛЮЧЁН' : 'не подключён — если нужен, попроси подключить в меню → Подключения'}): gdrive_list, gdrive_search, gdrive_download, gdrive_upload, gdrive_mkdir, gdrive_delete. Пути в Диске указывай как «Папка/Подпапка/файл». ${gdrive.isConnected(user.id) ? 'Также доступен rclone с remote "gdrive:" (конфиг: ' + require('./rclone').confPath(user.id) + ') — для синхронизации больших папок: rclone --config <конфиг> sync/copy.' : ''} Чтобы работать с файлом из Диска — скачай его на сервер, обработай и при необходимости загрузи обратно.
+- Браузер (browser_open/snapshot/click/type/…): настоящий Chromium на сервере с постоянным профилем. Пользователь видит экран вживую и может сам войти в аккаунты (TikTok, Telegram Web, Instagram, Google…) — после этого ты действуешь от его имени. Если нужен вход — открой сайт и попроси пользователя войти на экране браузера, затем продолжай. Капчи и SMS-коды тоже вводит пользователь.
+- Секреты / .env: ask_user показывает пользователю окно ввода (токены ботов, API-ключи, api_id/api_hash Telegram, коды подтверждения). Сохранённые секреты автоматически доступны как переменные окружения во всех командах и службах: ${secretNames.join(', ') || 'пока нет'}. Никогда не проси прислать секрет обычным сообщением и не выводи значения секретов.
+- Боты и серверы 24/7: service_create (systemd, автоперезапуск) + service_control (логи, рестарт). Для Telegram-бота: попроси токен через ask_user (BOT_TOKEN), напиши код, поставь зависимости, запусти через service_create, проверь логи.
+- Telegram-аккаунт пользователя (не бот): через Telethon/Pyrogram — попроси api_id/api_hash (my.telegram.org) и телефон через ask_user, код из Telegram — вторым ask_user; сессию храни в папке проекта.
+- Скиллы и память: skill_install (скачать скилл по ссылке, например из github.com/anthropics/skills), skill_create (сохранить свой рецепт), memory_save (запомнить факт навсегда). Когда узнаёшь что-то важное о пользователе или его проектах — сохраняй в память.
 - Сервер и телефон можно использовать вместе: например скопировать файл с телефона на сервер (phone_to_server), обработать/собрать его там и вернуть на телефон (server_to_phone) или прислать через send_file. Если телефон не в сети — попроси пользователя открыть приложение Kala.
-- Долгие серверы запускай с background=true. Не используй интерактивные команды (добавляй -y и т.п.).`;
+- Перед каждым действием коротко пиши, что собираешься сделать и зачем (одна строка) — пользователь видит это в реальном времени.
+- Долгие процессы запускай с background=true, а постоянные боты/сайты — через service_create. Не используй интерактивные команды (добавляй -y и т.п.).
+${skills.promptBlock(user.id)}`;
 }
 
 // Convert messages produced by Claude Code CLI into plain text for API providers.
@@ -105,12 +146,13 @@ function loadImageFn(uid) {
   };
 }
 
-function toolEnv() {
+function toolEnv(uid) {
   // temp dir on the main disk: /tmp on some VPS is a tiny tmpfs that fills up
   const tmp = path.join(DATA_DIR, 'tmp');
   try { fs.mkdirSync(tmp, { recursive: true, mode: 0o1777 }); fs.chmodSync(tmp, 0o1777); } catch {}
   const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive', PIP_BREAK_SYSTEM_PACKAGES: '1', CI: '1', TERM: 'dumb', TMPDIR: tmp };
   delete env.KALA_SECRET;
+  if (uid) Object.assign(env, secrets.values(uid));
   return env;
 }
 
@@ -120,14 +162,19 @@ async function runApi(uid, user, chat, run) {
   for (let step = 0; step < MAX_AGENT_STEPS; step++) {
     if (run.abort.signal.aborted) return;
     const phoneCall = phoneCaller(uid);
-    run.partial = '';
+    run.partial = ''; run.thinking = ''; run.drafts = {};
+    setStatus(uid, chat.id, run, step ? 'Анализирует результат…' : 'Думает над задачей…');
+    const dr = makeDraftEmitter(uid, chat.id, run);
     const res = await llm.stream({
       p, model: chat.model, system: systemPrompt(chat, user, !!phoneCall),
       messages: normalizeForApi(chat.messages), tools: tools.DEFS, signal: run.abort.signal, loadImage,
-      onText: (d) => { run.partial += d; emit(uid, chat.id, { t: 'delta', text: d }); },
+      onText: (d) => { if (!run.partial) setStatus(uid, chat.id, run, 'Пишет ответ…'); run.partial += d; emit(uid, chat.id, { t: 'delta', text: d }); },
+      onThinking: dr.thinking, onToolStart: dr.start, onToolDelta: dr.delta,
     });
+    dr.flush();
     run.partial = '';
-    const amsg = addMessage(uid, chat, { role: 'assistant', content: res.text, toolCalls: res.toolCalls, reasoning: res.reasoning || undefined, model: chat.model });
+    const amsg = addMessage(uid, chat, { role: 'assistant', content: res.text, toolCalls: res.toolCalls, reasoning: res.reasoning || run.thinking || undefined, model: chat.model });
+    run.drafts = {}; run.thinking = '';
     if (!amsg.toolCalls.length) return;
     for (const tc of amsg.toolCalls) {
       if (run.abort.signal.aborted) {
@@ -135,8 +182,11 @@ async function runApi(uid, user, chat, run) {
         continue;
       }
       run.toolOutputs[tc.id] = '';
+      setStatus(uid, chat.id, run, label(tc.name) + (summary(tc.name, tc.args) ? ': ' + summary(tc.name, tc.args) : ''));
       const ctx = {
-        uid, chat, ...ctxBase(chat), env: toolEnv(), signal: run.abort.signal, phoneCall: phoneCaller(uid),
+        uid, user, chat, ...ctxBase(chat), env: toolEnv(uid), signal: run.abort.signal, phoneCall: phoneCaller(uid),
+        askForm: (form) => askForm(uid, chat.id, run, form),
+        onBrowser: () => emit(uid, chat.id, { t: 'browser_active' }),
         onOutput: (s) => { run.toolOutputs[tc.id] += s; if (run.toolOutputs[tc.id].length > 20000) run.toolOutputs[tc.id] = run.toolOutputs[tc.id].slice(-10000); emit(uid, chat.id, { t: 'tool_output', toolCallId: tc.id, text: s }); },
       };
       const r = await tools.exec(ctx, tc.name, tc.args);
@@ -147,12 +197,32 @@ async function runApi(uid, user, chat, run) {
   addMessage(uid, chat, { role: 'event', content: `Достигнут лимит шагов (${MAX_AGENT_STEPS}). Напишите «продолжай», чтобы продолжить.` });
 }
 
+// ---------- forms (ask_user) ----------
+function askForm(uid, chatId, run, form) {
+  return new Promise((resolve) => {
+    const id = crypto.randomBytes(6).toString('hex');
+    const pub = { id, ...form };
+    run.form = { public: pub, resolve };
+    setStatus(uid, chatId, run, 'Ждёт вашего ответа в окне «' + (form.title || 'Ввод') + '»');
+    emit(uid, chatId, { t: 'form', form: pub });
+    const done = (v) => { if (run.form && run.form.public.id === id) { run.form = null; emit(uid, chatId, { t: 'form_done', id }); resolve(v); } };
+    run.form.done = done;
+    const t = setTimeout(() => done({ cancelled: true }), 60 * 60000);
+    run.abort.signal.addEventListener('abort', () => { clearTimeout(t); done({ cancelled: true }); });
+  });
+}
+function submitForm(uid, chatId, id, values, cancelled) {
+  const run = runs.get(key(uid, chatId));
+  if (!run || !run.form || run.form.public.id !== id) throw Object.assign(new Error('Форма уже закрыта'), { status: 409 });
+  run.form.done(cancelled ? { cancelled: true } : { values: values || {} });
+}
+
 // ---------- Claude Code CLI backend ----------
 const internalTokens = new Map(); // token -> {uid, chatId}
 
 function runClaudeCli(uid, user, chat, run, prompt) {
   const p = providers.resolve(uid, chat.provider);
-  const env = { ...toolEnv(), IS_SANDBOX: '1' };
+  const env = { ...toolEnv(uid), IS_SANDBOX: '1', MCP_TOOL_TIMEOUT: '3600000' };
   if (p.apiKey) env.CLAUDE_CODE_OAUTH_TOKEN = p.apiKey;
   const itok = crypto.randomBytes(16).toString('hex');
   internalTokens.set(itok, { uid, chatId: chat.id });
@@ -163,9 +233,9 @@ function runClaudeCli(uid, user, chat, run, prompt) {
     const prev = chat.messages.slice(0, -1).filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content));
     if (prev.length) prompt = 'Предыдущая переписка в этом чате:\n' + prev.slice(-20).map((m) => `${m.role === 'user' ? 'Пользователь' : 'Ассистент'}: ${String(m.content).slice(0, 1500)}`).join('\n') + '\n\nНовое сообщение пользователя:\n' + prompt;
   }
-  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', chat.model,
+  const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--model', chat.model,
     '--dangerously-skip-permissions', '--mcp-config', mcpCfg,
-    '--append-system-prompt', systemPrompt(chat, user, !!phoneCaller(uid)) + '\nИнструменты телефона, install_packages, view_image и send_file доступны через MCP-сервер "kala" (mcp__kala__*).' + (isFull(chat) ? '\nТы запущен как пользователь kala с sudo без пароля: для действий от root добавляй sudo.' : '')];
+    '--append-system-prompt', systemPrompt(chat, user, !!phoneCaller(uid)) + '\nИнструменты Kala (ask_user, service_*, skill_*, memory_*, browser_*, gdrive_*, phone_*, install_packages, view_image, send_file) доступны через MCP-сервер "kala" (mcp__kala__*).' + (isFull(chat) ? '\nТы запущен как пользователь kala с sudo без пароля: для действий от root добавляй sudo.' : '')];
   if (chat.claudeSessionId) args.push('--resume', chat.claudeSessionId);
 
   return new Promise((resolve, reject) => {
@@ -173,6 +243,7 @@ function runClaudeCli(uid, user, chat, run, prompt) {
     proc.stdin.end(prompt);
     run.abort.signal.addEventListener('abort', () => { try { proc.kill('SIGINT'); setTimeout(() => proc.kill('SIGKILL'), 3000); } catch {} });
     let buf = '', errBuf = '', resultErr = null;
+    const cliDraft = makeDraftEmitter(uid, chat.id, run);
     const names = {};
     proc.stdout.on('data', (d) => {
       buf += d.toString();
@@ -183,7 +254,19 @@ function runClaudeCli(uid, user, chat, run, prompt) {
         if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.session_id && ev.session_id !== chat.claudeSessionId) { chat.claudeSessionId = ev.session_id; store.saveChat(uid, chat); }
+        if (ev.type === 'stream_event' && ev.event) {
+          const se = ev.event;
+          if (se.type === 'message_start') { run.partial = ''; run.drafts = {}; setStatus(uid, chat.id, run, 'Думает…'); }
+          else if (se.type === 'content_block_start' && se.content_block && se.content_block.type === 'tool_use') cliDraft.start(se.content_block.id, se.content_block.name.replace(/^mcp__kala__/, ''));
+          else if (se.type === 'content_block_delta' && se.delta) {
+            if (se.delta.type === 'text_delta') { if (!run.partial) setStatus(uid, chat.id, run, 'Пишет ответ…'); run.partial += se.delta.text; emit(uid, chat.id, { t: 'delta', text: se.delta.text }); }
+            else if (se.delta.type === 'input_json_delta') { const b = Object.keys(run.drafts).pop(); if (b) cliDraft.delta(b, se.delta.partial_json); }
+            else if (se.delta.type === 'thinking_delta') cliDraft.thinking(se.delta.thinking);
+          }
+          continue;
+        }
         if (ev.type === 'assistant' && ev.message) {
+          cliDraft.flush(); run.partial = ''; run.drafts = {};
           let text = '';
           const calls = [];
           for (const b of ev.message.content || []) {
@@ -191,6 +274,7 @@ function runClaudeCli(uid, user, chat, run, prompt) {
             else if (b.type === 'tool_use') { calls.push({ id: b.id, name: b.name.replace(/^mcp__kala__/, ''), args: b.input }); names[b.id] = b.name; }
           }
           if (text || calls.length) addMessage(uid, chat, { role: 'assistant', content: text, toolCalls: calls, cli: true, model: chat.model });
+          if (calls.length) setStatus(uid, chat.id, run, label(calls[0].name) + (summary(calls[0].name, calls[0].args) ? ': ' + summary(calls[0].name, calls[0].args) : ''));
         } else if (ev.type === 'user' && ev.message && Array.isArray(ev.message.content)) {
           for (const b of ev.message.content) {
             if (b.type !== 'tool_result') continue;
@@ -227,7 +311,9 @@ async function internalTool(token, name, args) {
   if (!it) throw new Error('bad token');
   const chat = store.getChat(it.uid, it.chatId);
   const run = runs.get(key(it.uid, it.chatId));
-  const ctx = { uid: it.uid, chat, ...ctxBase(chat), env: toolEnv(), signal: run && run.abort.signal, phoneCall: phoneCaller(it.uid) };
+  const user = { id: it.uid };
+  const ctx = { uid: it.uid, user, chat, ...ctxBase(chat), env: toolEnv(it.uid), signal: run && run.abort.signal, phoneCall: phoneCaller(it.uid),
+    askForm: run ? (form) => askForm(it.uid, it.chatId, run, form) : null, onBrowser: () => emit(it.uid, it.chatId, { t: 'browser_active' }) };
   const r = await tools.exec(ctx, name, args);
   if (run && (r.images || r.file)) run.cliExtras['mcp__kala__' + name] = { images: r.images, file: r.file };
   const load = loadImageFn(it.uid);
@@ -244,7 +330,7 @@ async function startRun(user, chatId, text, images) {
     chat.title = String(text).replace(/\s+/g, ' ').slice(0, 60) || 'Новый чат';
   }
   addMessage(uid, chat, { role: 'user', content: String(text || ''), images: images && images.length ? images : undefined });
-  const run = { abort: new AbortController(), partial: '', toolOutputs: {}, cliExtras: {}, chat };
+  const run = { abort: new AbortController(), partial: '', toolOutputs: {}, cliExtras: {}, chat, status: 'Запуск…', thinking: '', drafts: {}, form: null };
   runs.set(k, run);
   emit(uid, chatId, { t: 'run_start' });
   broadcast(uid, { t: 'chats_changed' });
@@ -286,4 +372,4 @@ function stopRun(uid, chatId) {
 // While a run is active its chat object is the source of truth (settings edits must go there).
 function liveChat(uid, chatId) { const r = runs.get(key(uid, chatId)); return r ? r.chat : null; }
 
-module.exports = { liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };
+module.exports = { submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };

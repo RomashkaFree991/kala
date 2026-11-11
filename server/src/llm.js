@@ -53,7 +53,8 @@ function toAnthropic(messages, loadImage) {
   return out;
 }
 
-async function anthropicStream({ p, model, system, messages, tools, signal, onText, loadImage }) {
+async function anthropicStream(opts) {
+  const { p, model, system, messages, tools, signal, onText, loadImage } = opts;
   const body = {
     model, max_tokens: 16000, system, stream: true,
     messages: toAnthropic(messages, loadImage),
@@ -70,11 +71,15 @@ async function anthropicStream({ p, model, system, messages, tools, signal, onTe
   let stopReason = null;
   for await (const data of sseLines(res)) {
     const ev = safeParse(data);
-    if (ev.type === 'content_block_start') blocks[ev.index] = { ...ev.content_block, json: '' };
+    if (ev.type === 'content_block_start') {
+      blocks[ev.index] = { ...ev.content_block, json: '' };
+      if (ev.content_block.type === 'tool_use' && opts.onToolStart) opts.onToolStart(ev.content_block.id, ev.content_block.name);
+    }
     else if (ev.type === 'content_block_delta') {
       const b = blocks[ev.index];
       if (ev.delta.type === 'text_delta') { text += ev.delta.text; onText(ev.delta.text); }
-      else if (ev.delta.type === 'input_json_delta' && b) b.json += ev.delta.partial_json;
+      else if (ev.delta.type === 'input_json_delta' && b) { b.json += ev.delta.partial_json; opts.onToolDelta && opts.onToolDelta(b.id, ev.delta.partial_json); }
+      else if (ev.delta.type === 'thinking_delta') opts.onThinking && opts.onThinking(ev.delta.thinking);
     } else if (ev.type === 'message_delta') stopReason = ev.delta.stop_reason;
     else if (ev.type === 'error') throw new Error('Anthropic: ' + JSON.stringify(ev.error));
   }
@@ -124,7 +129,8 @@ function toOpenAI(system, messages, loadImage) {
   return out;
 }
 
-async function openaiStream({ p, model, system, messages, tools, signal, onText, loadImage }) {
+async function openaiStream(opts) {
+  const { p, model, system, messages, tools, signal, onText, loadImage } = opts;
   const body = {
     model, stream: true,
     messages: toOpenAI(system, messages, loadImage),
@@ -146,14 +152,15 @@ async function openaiStream({ p, model, system, messages, tools, signal, onText,
     if (!ch) continue;
     const d = ch.delta || {};
     if (d.content) { text += d.content; onText(d.content); }
-    if (d.reasoning_content) reasoning += d.reasoning_content;
+    const think = d.reasoning_content || d.reasoning;
+    if (think && typeof think === 'string') { reasoning += think; opts.onThinking && opts.onThinking(think); }
     for (const tc of d.tool_calls || []) {
       const idx = tc.index != null ? tc.index : calls.length;
       if (!calls[idx]) calls[idx] = { id: tc.id || '', name: '', args: '' };
       const c = calls[idx];
       if (tc.id) c.id = tc.id;
-      if (tc.function && tc.function.name) c.name += tc.function.name;
-      if (tc.function && tc.function.arguments) c.args += tc.function.arguments;
+      if (tc.function && tc.function.name) { c.name += tc.function.name; if (!c.started && opts.onToolStart) { c.started = true; c.tmpId = c.id || 'draft' + idx; opts.onToolStart(c.tmpId, c.name); } }
+      if (tc.function && tc.function.arguments) { c.args += tc.function.arguments; opts.onToolDelta && opts.onToolDelta(c.tmpId || c.id || 'draft' + idx, tc.function.arguments); }
       if (tc.extra_content) c.extra = tc.extra_content;
     }
     if (ch.finish_reason) stopReason = ch.finish_reason;
