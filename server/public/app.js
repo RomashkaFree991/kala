@@ -701,33 +701,54 @@
       <div class="act"></div></div>`);
     const act = $('.act', el);
     if (g.connected) {
-      act.innerHTML = `<div class="row wrap"><button class="btn small" data-a="browse">${ic('folder', 'sm')} Обзор</button><button class="btn small" data-a="re">${ic('refresh', 'sm')} Переподключить</button><button class="btn small danger" data-a="off">Отключить</button></div>`;
+      act.innerHTML = `<div class="row wrap"><button class="btn small" data-a="browse">${ic('folder', 'sm')} Обзор</button><button class="btn small" data-a="re">${ic('refresh', 'sm')} Сменить аккаунт</button><button class="btn small danger" data-a="off">Отключить</button></div>`;
       $('[data-a=browse]', act).onclick = async () => { try { const r = await api('/gdrive/list?folder=root'); sheet(`<h3>Мой диск</h3><pre style="white-space:pre-wrap;font:12px var(--mono);color:var(--fg2)">${esc(r.text)}</pre>`); } catch (e) { toast(e.message); } };
       $('[data-a=re]', act).onclick = async () => { try { const r = await api('/gdrive/connect', { body: {} }); openExternal(r.url); } catch (e) { toast(e.message); } };
       $('[data-a=off]', act).onclick = async () => { if (!confirm('Отключить Google Диск?')) return; await api('/gdrive', { method: 'DELETE' }); renderProviders(); };
       return el;
     }
-    act.innerHTML = `
-      <details ${g.configured ? '' : 'open'}><summary>Как получить ключи Google (один раз, ~3 минуты)</summary>
-        <ol>
-          <li>Откройте <a href="https://console.cloud.google.com/projectcreate" data-ext="1">Google Cloud</a> и создайте проект (любое имя).</li>
-          <li>Включите <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" data-ext="1">Google Drive API</a> → «Включить».</li>
-          <li><a href="https://console.cloud.google.com/auth/branding" data-ext="1">Экран согласия OAuth</a>: тип «Внешний», имя Kala, ваша почта. В разделе «Аудитория» нажмите <b>«Опубликовать»</b> (иначе вход слетает через 7 дней).</li>
-          <li><a href="https://console.cloud.google.com/auth/clients/create" data-ext="1">Создайте клиент OAuth</a>: тип <b>«Веб-приложение»</b>, в «Разрешённые URI перенаправления» добавьте:<br><code>${esc(g.redirectUri)}</code> <button class="btn small" data-a="copy" style="margin-top:4px">Копировать</button></li>
-          <li>Скопируйте Client ID и Client Secret сюда и нажмите «Войти через Google». Если Google покажет «Приложение не проверено» — «Дополнительно» → «Перейти в Kala».</li>
-        </ol>
-      </details>
-      <input class="field" data-a="cid" placeholder="${g.configured ? 'Client ID сохранён (' + esc(g.clientIdHint) + ')' : 'Client ID (….apps.googleusercontent.com)'}" autocapitalize="none">
-      <input class="field" data-a="csec" placeholder="${g.configured ? 'Client Secret сохранён' : 'Client Secret'}" autocapitalize="none">
-      <button class="btn primary block" data-a="go">${ic('drive', 'sm')} Войти через Google</button>`;
-    $('[data-a=copy]', act).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(g.redirectUri).then(() => toast('Скопировано'), () => toast(g.redirectUri)); };
-    $('[data-a=go]', act).onclick = async () => {
-      try {
-        const r = await api('/gdrive/connect', { body: { clientId: $('[data-a=cid]', act).value, clientSecret: $('[data-a=csec]', act).value } });
-        openExternal(r.url); toast('Войдите в Google и разрешите доступ');
-      } catch (e) { toast(e.message); }
+    const login = async () => {
+      try { const r = await api('/gdrive/connect', { body: {} }); openExternal(r.url); toast('Выберите аккаунт Google и нажмите «Разрешить»'); }
+      catch (e) { toast(e.message); }
     };
+    if (g.configured) {
+      act.innerHTML = `<button class="btn primary block" data-a="go">${ic('drive', 'sm')} Войти через Google</button>
+        ${S.user && S.user.admin ? '<details><summary>Ключи сервера (' + esc(g.clientIdHint) + ')</summary><div data-a="setup"></div></details>' : ''}`;
+      $('[data-a=go]', act).onclick = login;
+      if ($('[data-a=setup]', act)) $('[data-a=setup]', act).appendChild(gdriveSetup(g));
+    } else if (S.user && S.user.admin) {
+      act.innerHTML = `<p class="muted" style="margin-top:0">Нужно один раз подключить сервер к Google (≈2 минуты). Дальше вход — одна кнопка: выбрали аккаунт → «Разрешить».</p>`;
+      act.appendChild(gdriveSetup(g));
+    } else {
+      act.innerHTML = '<p class="muted">Попросите владельца сервера один раз настроить Google в этом разделе.</p>';
+    }
     return el;
+  }
+
+  function gdriveSetup(g) {
+    const box = h(`<div>
+      <ol>
+        <li>Откройте <a href="https://console.cloud.google.com/apis/library/drive.googleapis.com" data-ext="1">Google Drive API</a>, создайте проект (если спросит) и нажмите «Включить».</li>
+        <li>Откройте <a href="https://console.cloud.google.com/auth/overview" data-ext="1">Google Auth Platform</a> → «Начать»: имя Kala, ваша почта, тип «Внешний». Затем «Аудитория» → <b>«Опубликовать»</b>.</li>
+        <li><a href="https://console.cloud.google.com/auth/clients/create" data-ext="1">Создать клиента</a>: тип <b>«Веб-приложение»</b>, URI перенаправления:<br><code>${esc(g.redirectUri)}</code> <button class="btn small" data-a="copy" style="margin-top:4px">Копировать</button></li>
+        <li>Нажмите «Скачать JSON» и выберите этот файл ниже — или вставьте Client ID и Secret.</li>
+      </ol>
+      <button class="btn block" data-a="file">${ic('upload', 'sm')} Выбрать скачанный JSON-файл</button>
+      <input type="file" data-a="fileinp" accept=".json,application/json" hidden>
+      <details><summary>или вставить вручную</summary>
+        <input class="field" data-a="cid" placeholder="Client ID (….apps.googleusercontent.com)" autocapitalize="none">
+        <input class="field" data-a="csec" placeholder="Client Secret" autocapitalize="none">
+        <button class="btn primary block" data-a="save">Сохранить и войти</button>
+      </details></div>`);
+    const save = async (body) => {
+      try { const r = await api('/gdrive/app', { body }); toast('Сервер подключён к Google ✓'); openExternal(r.url); renderProviders(); }
+      catch (e) { toast(e.message); }
+    };
+    $('[data-a=copy]', box).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(g.redirectUri).then(() => toast('Скопировано'), () => toast(g.redirectUri)); };
+    $('[data-a=file]', box).onclick = () => $('[data-a=fileinp]', box).click();
+    $('[data-a=fileinp]', box).onchange = async (e) => { const f = e.target.files[0]; if (f) save({ json: await f.text() }); };
+    $('[data-a=save]', box).onclick = () => save({ clientId: $('[data-a=cid]', box).value, clientSecret: $('[data-a=csec]', box).value });
+    return box;
   }
 
   async function connect(p, body) {

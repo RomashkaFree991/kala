@@ -128,7 +128,12 @@ api.post('/claude-login/finish', wrap(async (req, res) => { await providers.clau
 // ---------- Google Drive ----------
 const googleRedirect = (req) => publicUrl(req) + '/api/oauth/google/callback';
 api.get('/gdrive', (req, res) => res.json(gdrive.status(req.user.id, googleRedirect(req))));
-api.post('/gdrive/connect', wrap((req, res) => res.json({ url: gdrive.authUrl(req.user.id, String(req.body.clientId || '').trim(), String(req.body.clientSecret || '').trim(), googleRedirect(req)) })));
+api.post('/gdrive/connect', wrap((req, res) => res.json({ url: gdrive.authUrl(req.user.id, googleRedirect(req)) })));
+api.post('/gdrive/app', wrap((req, res) => {
+  if (!req.user.admin) throw auth.httpError(403, 'Только владелец сервера');
+  gdrive.setApp(req.body.clientId, req.body.clientSecret, req.body.json);
+  res.json({ ok: true, url: gdrive.authUrl(req.user.id, googleRedirect(req)) });
+}));
 api.delete('/gdrive', (req, res) => { gdrive.disconnect(req.user.id); res.json({ ok: true }); });
 api.get('/gdrive/list', wrap(async (req, res) => res.json({ text: await gdrive.list(req.user.id, req.query.folder) })));
 

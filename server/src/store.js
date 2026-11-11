@@ -92,7 +92,7 @@ function mediaPath(uid, id) {
 function loadMedia(uid, id) { return fs.readFileSync(mediaPath(uid, id)); }
 
 module.exports = {
-  get db() { return db; }, saveDb, readJson, writeJson, userDir,
+  get db() { return db; }, saveDb, readJson, writeJson, userDir, encrypt, decrypt,
   getProviders, setProvider,
   getChat, saveChat, deleteChat, listChats,
   saveMedia, loadMedia, mediaPath,

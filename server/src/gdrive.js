@@ -29,22 +29,43 @@ function saveConf(uid, conf) {
   delete rest.secret;
   store.setProvider(uid, 'gdrive', { ...rest, secret: JSON.stringify({ clientId, clientSecret, refreshToken }) });
 }
+// Server-wide Google OAuth client (set up once by the owner, then everyone signs in with one tap)
+const APP_FILE = path.join(DATA_DIR, 'google-client.json');
+function getApp() {
+  if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) return { clientId: process.env.GOOGLE_CLIENT_ID, clientSecret: process.env.GOOGLE_CLIENT_SECRET };
+  const j = store.readJson(APP_FILE, null);
+  if (!j || !j.clientId) return null;
+  try { return { clientId: j.clientId, clientSecret: store.decrypt(j.secret) }; } catch { return null; }
+}
+// accepts clientId+secret, or the content of client_secret_*.json downloaded from Google Cloud
+function setApp(clientId, clientSecret, json) {
+  if (json) {
+    let j; try { j = JSON.parse(json); } catch { throw new Error('Это не JSON-файл от Google'); }
+    const c = j.web || j.installed || j;
+    clientId = c.client_id; clientSecret = c.client_secret;
+    if (j.installed) throw new Error('Это клиент типа «Компьютер». Нужен тип «Веб-приложение».');
+  }
+  clientId = String(clientId || '').trim(); clientSecret = String(clientSecret || '').trim();
+  if (!/\.apps\.googleusercontent\.com$/.test(clientId)) throw new Error('Client ID должен заканчиваться на .apps.googleusercontent.com');
+  if (!clientSecret) throw new Error('Нет Client Secret');
+  store.writeJson(APP_FILE, { clientId, secret: store.encrypt(clientSecret), updatedAt: Date.now() });
+}
+
 function status(uid, redirectUri) {
   const c = getConf(uid);
-  return { configured: !!(c && c.clientId), connected: !!(c && c.refreshToken), email: c && c.email, redirectUri, clientIdHint: c && c.clientId ? c.clientId.slice(0, 12) + '…' : '' };
+  const app = getApp();
+  return { configured: !!app, connected: !!(c && c.refreshToken), email: c && c.email, redirectUri, clientIdHint: app ? app.clientId.slice(0, 14) + '…' : '' };
 }
 
 const pending = new Map(); // state -> {uid, redirectUri}
-function authUrl(uid, clientId, clientSecret, redirectUri) {
-  const c = getConf(uid) || {};
-  const conf = { ...c, clientId: clientId || c.clientId, clientSecret: clientSecret || c.clientSecret };
-  if (!conf.clientId || !conf.clientSecret) throw new Error('Укажите Client ID и Client Secret');
-  saveConf(uid, conf);
+function authUrl(uid, redirectUri) {
+  const app = getApp();
+  if (!app) throw new Error('Google ещё не настроен на сервере (один раз, владельцем)');
   const state = crypto.randomBytes(16).toString('hex');
-  pending.set(state, { uid, redirectUri, t: Date.now() });
+  pending.set(state, { uid, redirectUri, app, t: Date.now() });
   return 'https://accounts.google.com/o/oauth2/v2/auth?' + new URLSearchParams({
-    client_id: conf.clientId, redirect_uri: redirectUri, response_type: 'code', scope: SCOPE,
-    access_type: 'offline', prompt: 'consent', include_granted_scopes: 'true', state,
+    client_id: app.clientId, redirect_uri: redirectUri, response_type: 'code', scope: SCOPE,
+    access_type: 'offline', prompt: 'select_account consent', include_granted_scopes: 'true', state,
   });
 }
 
@@ -52,7 +73,7 @@ async function finish(state, code) {
   const p = pending.get(state);
   if (!p) throw new Error('Сессия входа устарела, попробуйте ещё раз');
   pending.delete(state);
-  const conf = getConf(p.uid);
+  const conf = { clientId: p.app.clientId, clientSecret: p.app.clientSecret };
   const r = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ code, client_id: conf.clientId, client_secret: conf.clientSecret, redirect_uri: p.redirectUri, grant_type: 'authorization_code' }),
@@ -253,4 +274,4 @@ async function trash(uid, ref) {
   return `«${f.name}» перемещён в корзину Google Диска (можно восстановить 30 дней)`;
 }
 
-module.exports = { status, authUrl, finish, disconnect, list, search, download, upload, mkdir, trash, isConnected: (uid) => { const c = getConf(uid); return !!(c && c.refreshToken); } };
+module.exports = { getApp, setApp, status, authUrl, finish, disconnect, list, search, download, upload, mkdir, trash, isConnected: (uid) => { const c = getConf(uid); return !!(c && c.refreshToken); } };
