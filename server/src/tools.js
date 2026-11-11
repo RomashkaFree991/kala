@@ -13,6 +13,14 @@ const gdrive = require('./gdrive');
 const secrets = require('./secrets');
 const skills = require('./skills');
 const browser = require('./browser');
+const scheduler = require('./scheduler');
+const notify = require('./notify');
+const sites = require('./sites');
+const monitor = require('./monitor');
+const media = require('./media');
+const extras = require('./extras');
+const android = require('./android');
+const history = require('./history');
 const { DATA_DIR } = require('./config');
 
 // ---------- services (systemd) ----------
@@ -208,8 +216,10 @@ async function exec(ctx, name, args) {
       case 'write_file': {
         const f = abs(ctx, args.path);
         const existed = rfs.exists(f);
+        let before = null; if (existed) { try { const b = rfs.readFile(f, ctx.root); if (b.length < 2e6) before = b.toString('utf8'); } catch {} }
         rfs.writeFile(f, String(args.content ?? ''), ctx.root);
-        return { content: `${existed ? 'Перезаписан' : 'Создан'} ${f} (${Buffer.byteLength(String(args.content ?? ''))} байт)` };
+        const diffId = history.saveDiff(ctx.uid, f, before, String(args.content ?? ''));
+        return { content: `${existed ? 'Перезаписан' : 'Создан'} ${f} (${Buffer.byteLength(String(args.content ?? ''))} байт)`, diff: diffId };
       }
       case 'edit_file': {
         const f = abs(ctx, args.path);
@@ -219,7 +229,7 @@ async function exec(ctx, name, args) {
         if (n > 1 && !args.replace_all) return { content: `old_string найден ${n} раз — уточните фрагмент или replace_all=true`, isError: true };
         const out = args.replace_all ? src.split(args.old_string).join(args.new_string) : src.replace(args.old_string, () => args.new_string);
         rfs.writeFile(f, out, ctx.root);
-        return { content: `Изменён ${f} (${n} замен)` };
+        return { content: `Изменён ${f} (${n} замен)`, diff: history.saveDiff(ctx.uid, f, src, out) };
       }
       case 'list_dir': {
         const d = abs(ctx, args.path);
@@ -344,6 +354,82 @@ async function exec(ctx, name, args) {
       case 'browser_scroll': case 'browser_back': case 'browser_eval': case 'browser_upload': case 'browser_close': {
         if (name === 'browser_upload') args = { ...args, file: abs(ctx, args.file) };
         const r = await browser.tool(ctx.uid, name, args, ctx.onBrowser);
+        return { ...r, content: clip(r.content) };
+      }
+      case 'schedule_create': {
+        const t = scheduler.create(ctx.uid, { name: args.name, cron: args.cron, prompt: args.prompt, kind: args.kind || 'prompt', chatId: ctx.chat.id, newChatEach: args.same_chat === false, tz: (ctx.user && ctx.user.tz) || ctx.chat.tz || 'UTC' });
+        return { content: `Задача «${t.name}» создана: ${scheduler.describe(t.cron)} (${t.tz}). Ближайший запуск: ${new Date(scheduler.nextRun(t.cron, t.tz)).toLocaleString('ru-RU', { timeZone: t.tz })}. id=${t.id}` };
+      }
+      case 'schedule_list': { const l = scheduler.list(ctx.uid); return { content: l.length ? l.map((t) => `${t.id}: «${t.name}» ${scheduler.describe(t.cron)} ${t.enabled ? '' : '(выключена)'} — ${t.kind === 'backup' ? 'резервная копия' : t.prompt.slice(0, 100)}${t.lastRun ? ' | последний запуск ' + new Date(t.lastRun).toLocaleString('ru-RU', { timeZone: t.tz }) + ' ' + t.lastStatus : ''}`).join('\n') : 'Задач по расписанию нет' }; }
+      case 'schedule_delete': scheduler.remove(ctx.uid, args.id); return { content: 'Задача удалена' };
+      case 'notify_user': notify.push(ctx.uid, args.title, args.text || '', { chatId: ctx.chat.id }); return { content: 'Уведомление отправлено' };
+      case 'agents_run': {
+        if (!ctx.runAgents) return { content: 'Недоступно во вложенном агенте', isError: true };
+        return { content: await ctx.runAgents(args.agents || []) };
+      }
+      case 'publish_site': { const r = await sites.publish(ctx.uid, { name: args.name, dir: args.dir ? abs(ctx, args.dir) : null, port: args.port }); return { content: r.msg, isError: false }; }
+      case 'unpublish_site': return { content: sites.unpublish(ctx.uid, args.name) };
+      case 'sites_list': { const l = sites.list(ctx.uid); return { content: l.length ? l.map((x) => `${x.name}: ${x.ssl ? 'https' : 'http'}://${x.host} ← ${x.dir || 'порт ' + x.port}`).join('\n') : 'Сайтов пока нет' }; }
+      case 'server_status': {
+        const m = await monitor.snapshot();
+        const gb = (b) => (b / 1073741824).toFixed(1) + ' ГБ';
+        return { content: `CPU: ${m.now.cpu}% (${m.cpus} ядер), нагрузка ${m.load.map((x) => x.toFixed(2)).join(' ')}\nПамять: ${gb(m.mem.used)} / ${gb(m.mem.total)} (${m.now.mem}%)\nДиск /: ${m.disk ? gb(m.disk.used) + ' / ' + gb(m.disk.total) + ' (' + m.now.disk + '%), свободно ' + gb(m.disk.free) : '?'}\nАптайм: ${(m.uptime / 3600).toFixed(1)} ч\nТоп процессов:\n` + m.procs.map((p) => `  ${p.pid} ${p.user} cpu ${p.cpu}% mem ${p.mem}% ${p.cmd}`).join('\n') + `\nСлужбы Kala:\n` + (m.services.map((x) => '  ' + x.unit + ': ' + x.active + '/' + x.sub).join('\n') || '  нет') };
+      }
+      case 'share_file': {
+        const f = abs(ctx, args.path);
+        const st = rfs.stat(f); if (st.dir) return { content: 'Это папка — сначала упакуй в zip', isError: true };
+        const l = extras.shareLink(ctx.uid, f, args.days || 7);
+        return { content: `Публичная ссылка на ${l.name} создана (QR-код показан пользователю).`, file: { path: f, name: l.name, size: st.size, share: l.token } };
+      }
+      case 'generate_image': {
+        ctx.onOutput && ctx.onOutput('Генерирую картинку…\n');
+        const g = await media.generateImage(ctx.uid, args);
+        const ext = g.mime.includes('png') ? 'png' : g.mime.includes('webp') ? 'webp' : 'jpg';
+        const f = abs(ctx, args.save_as || `images/img_${Date.now()}.${ext}`);
+        rfs.writeFile(f, g.buf, ctx.root);
+        const m = store.saveMedia(ctx.uid, g.buf, g.mime.includes('png') ? 'image/png' : g.mime.includes('webp') ? 'image/webp' : 'image/jpeg');
+        return { content: `Картинка готова (${g.via}): ${f}`, images: [m.id] };
+      }
+      case 'generate_video': {
+        ctx.onOutput && ctx.onOutput('Генерирую видео (может занять несколько минут)…\n');
+        const g = await media.generateVideo(ctx.uid, { ...args, image: args.image ? abs(ctx, args.image) : null });
+        const f = abs(ctx, args.save_as || `videos/video_${Date.now()}.mp4`);
+        rfs.writeFile(f, g.buf, ctx.root);
+        return { content: `Видео готово (${g.via}): ${f}`, file: { path: f, name: path.basename(f), size: g.buf.length } };
+      }
+      case 'telegram_post': {
+        const tok = secrets.values(ctx.uid)[args.token_var || 'BOT_TOKEN'];
+        if (!tok) return { content: `Нет ${args.token_var || 'BOT_TOKEN'} — попроси токен бота через ask_user`, isError: true };
+        const api = (m) => `https://api.telegram.org/bot${tok}/${m}`;
+        let r;
+        if (args.image || args.video) {
+          const fd = new FormData();
+          fd.append('chat_id', args.chat);
+          if (args.text) { fd.append('caption', String(args.text).slice(0, 1024)); fd.append('parse_mode', 'HTML'); }
+          const fp = abs(ctx, args.image || args.video);
+          fd.append(args.image ? 'photo' : 'video', new Blob([rfs.readFile(fp, ctx.root)]), path.basename(fp));
+          r = await fetch(api(args.image ? 'sendPhoto' : 'sendVideo'), { method: 'POST', body: fd });
+        } else r = await fetch(api('sendMessage'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: args.chat, text: args.text, parse_mode: 'HTML' }) });
+        const j = await r.json();
+        if (!j.ok) return { content: 'Telegram: ' + j.description, isError: true };
+        return { content: `Опубликовано в ${args.chat} (message_id ${j.result.message_id})` };
+      }
+      case 'github_clone': { const { repo } = extras.parseRepo(args.repo); return { content: await extras.ghClone(ctx.uid, args.repo, abs(ctx, args.dir || repo), args.branch) }; }
+      case 'github_pr': return { content: await extras.ghPullRequest(ctx.uid, { ...args, dir: abs(ctx, args.dir || '.') }) };
+      case 'ollama_pull': {
+        let st = await extras.ollamaStatus();
+        if (!st.installed) { ctx.onOutput && ctx.onOutput('Устанавливаю Ollama…\n'); await extras.ollamaInstall((d) => ctx.onOutput && ctx.onOutput(d)); await new Promise((r) => setTimeout(r, 3000)); }
+        let lastPct = -1;
+        const msg = await extras.ollamaPull(args.model, (j) => { if (j.total) { const pct = Math.floor(j.completed / j.total * 100); if (pct !== lastPct && pct % 5 === 0) { lastPct = pct; ctx.onOutput && ctx.onOutput(`${j.status} ${pct}%\n`); } } });
+        try { store.setProvider(ctx.uid, 'ollama', { ...(store.getProviders(ctx.uid).ollama || {}), connectedAt: Date.now(), via: 'local' }); } catch {}
+        return { content: msg + '. Модель доступна в провайдере «Ollama» при выборе модели.' };
+      }
+      case 'backup_now': return { content: await extras.backup(ctx.uid, ctx.user, gdrive, { includeProjects: args.include_projects !== false }) };
+      case 'android_start': case 'android_screenshot': case 'android_tap': case 'android_type': case 'android_key':
+      case 'android_swipe': case 'android_install': case 'android_open': case 'android_shell': case 'android_stop': {
+        if (name === 'android_install') args = { ...args, apk: abs(ctx, args.apk) };
+        if (!ctx.root && !(ctx.user && ctx.user.admin)) return { content: 'Виртуальный Android доступен только владельцу сервера', isError: true };
+        const r = await android.tool(ctx.uid, name, args, ctx);
         return { ...r, content: clip(r.content) };
       }
       case 'gdrive_list': return { content: clip(await gdrive.list(ctx.uid, args.folder)) };

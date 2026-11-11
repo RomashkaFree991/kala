@@ -12,6 +12,9 @@ const tools = require('./tools');
 const gdrive = require('./gdrive');
 const secrets = require('./secrets');
 const skills = require('./skills');
+const usage = require('./usage');
+const notify = require('./notify');
+const history = require('./history');
 const { MAX_AGENT_STEPS, PORT, DATA_DIR } = require('./config');
 
 const runs = new Map(); // key uid:chatId -> run
@@ -103,6 +106,13 @@ ${mode}
 - Боты и серверы 24/7: service_create (systemd, автоперезапуск) + service_control (логи, рестарт). Для Telegram-бота: попроси токен через ask_user (BOT_TOKEN), напиши код, поставь зависимости, запусти через service_create, проверь логи.
 - Telegram-аккаунт пользователя (не бот): через Telethon/Pyrogram — попроси api_id/api_hash (my.telegram.org) и телефон через ask_user, код из Telegram — вторым ask_user; сессию храни в папке проекта.
 - Скиллы и память: skill_install (скачать скилл по ссылке, например из github.com/anthropics/skills), skill_create (сохранить свой рецепт), memory_save (запомнить факт навсегда). Когда узнаёшь что-то важное о пользователе или его проектах — сохраняй в память.
+- Расписание: schedule_create (каждое утро проверять сайт, постить в канал, делать бэкап…), schedule_list/delete; notify_user — push на телефон.
+- Команда агентов: agents_run — несколько ИИ параллельно (напр. «программист» и «тестировщик»), можно с разными моделями.
+- Сайты: publish_site — публикация на <имя>.${require('./sites').baseDomain() || 'домен'} с HTTPS (папка со статикой или порт запущенного сервера).
+- server_status — нагрузка/память/диск; share_file — публичная ссылка + QR (например APK для другого телефона).
+- Медиа: generate_image (бесплатно через pollinations или OpenAI/Gemini/Replicate/fal), generate_video (Replicate/fal ключ). telegram_post — пост в канал через бота (картинка/видео/текст). Автопостинг = schedule_create + генерация + telegram_post (или TikTok через браузер: browser_upload).
+- GitHub: github_clone, github_pr (нужен $GITHUB_TOKEN через ask_user). Локальные модели: ollama_pull. Резервные копии: backup_now (в Google Диск).
+- Виртуальный Android на сервере: android_start, android_screenshot, android_tap/type/swipe/key, android_install (поставить собранный APK и протестировать), android_open, android_shell. Пользователь видит экран.
 - Сервер и телефон можно использовать вместе: например скопировать файл с телефона на сервер (phone_to_server), обработать/собрать его там и вернуть на телефон (server_to_phone) или прислать через send_file. Если телефон не в сети — попроси пользователя открыть приложение Kala.
 - Перед каждым действием коротко пиши, что собираешься сделать и зачем (одна строка) — пользователь видит это в реальном времени.
 - Долгие процессы запускай с background=true, а постоянные боты/сайты — через service_create. Не используй интерактивные команды (добавляй -y и т.п.).
@@ -172,6 +182,7 @@ async function runApi(uid, user, chat, run) {
       onThinking: dr.thinking, onToolStart: dr.start, onToolDelta: dr.delta,
     });
     dr.flush();
+    if (res.usage) usage.add(uid, { provider: chat.provider, model: chat.model, ...res.usage, chatId: chat.id });
     run.partial = '';
     const amsg = addMessage(uid, chat, { role: 'assistant', content: res.text, toolCalls: res.toolCalls, reasoning: res.reasoning || run.thinking || undefined, model: chat.model });
     run.drafts = {}; run.thinking = '';
@@ -186,15 +197,79 @@ async function runApi(uid, user, chat, run) {
       const ctx = {
         uid, user, chat, ...ctxBase(chat), env: toolEnv(uid), signal: run.abort.signal, phoneCall: phoneCaller(uid),
         askForm: (form) => askForm(uid, chat.id, run, form),
+        runAgents: chat.parentId ? null : (list) => runAgents(user, chat, list, run),
+        onAndroid: () => emit(uid, chat.id, { t: 'android_active' }),
         onBrowser: () => emit(uid, chat.id, { t: 'browser_active' }),
         onOutput: (s) => { run.toolOutputs[tc.id] += s; if (run.toolOutputs[tc.id].length > 20000) run.toolOutputs[tc.id] = run.toolOutputs[tc.id].slice(-10000); emit(uid, chat.id, { t: 'tool_output', toolCallId: tc.id, text: s }); },
       };
+      // snapshot of the project before a change -> "Откатить" button
+      let before = null;
+      if (!isFull(chat) && history.MODIFYING.has(tc.name)) before = await history.snapshot(chat.workspace, 'before ' + tc.name + ': ' + summary(tc.name, tc.args));
       const r = await tools.exec(ctx, tc.name, tc.args);
       delete run.toolOutputs[tc.id];
-      addMessage(uid, chat, { role: 'tool', toolCallId: tc.id, name: tc.name, content: tools.clip(r.content), isError: !!r.isError, images: r.images, file: r.file });
+      addMessage(uid, chat, { role: 'tool', toolCallId: tc.id, name: tc.name, content: tools.clip(r.content), isError: !!r.isError, images: r.images, file: r.file, diff: r.diff, before: before || undefined });
     }
   }
   addMessage(uid, chat, { role: 'event', content: `Достигнут лимит шагов (${MAX_AGENT_STEPS}). Напишите «продолжай», чтобы продолжить.` });
+}
+
+// ---------- parallel sub-agents ----------
+async function runAgents(user, parent, list, run) {
+  if (!list.length) return 'Нет задач';
+  if (list.length > 6) list = list.slice(0, 6);
+  const children = list.map((a, i) => {
+    const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex') + i;
+    let provider = a.provider || parent.provider, model = a.model || parent.model;
+    try { providers.resolve(user.id, provider); } catch { provider = parent.provider; model = parent.model; }
+    const chat = { id, title: '↳ ' + a.role, provider, model, workspace: parent.workspace, project: parent.project, serverAccess: parent.serverAccess, serverDir: parent.serverDir,
+      phoneAccess: parent.phoneAccess, parentId: parent.id, messages: [], createdAt: Date.now() };
+    store.saveChat(user.id, chat);
+    return { a, chat };
+  });
+  broadcast(user.id, { t: 'chats_changed' });
+  setStatus(user.id, parent.id, run, `Работают ${children.length} агента параллельно: ${list.map((x) => x.role).join(', ')}`);
+  const results = await Promise.all(children.map(async ({ a, chat }) => {
+    try {
+      const { done } = await startRun(user, chat.id, `Ты — «${a.role}» в команде ИИ-агентов, работающих параллельно в одной папке проекта (${chat.workspace}). Делай только свою часть, не мешай другим. В конце кратко отчитайся, что сделано.\n\nЗадача: ${a.task}`, [], { notify: false });
+      const onAbort = () => stopRun(user.id, chat.id);
+      run.abort.signal.addEventListener('abort', onAbort);
+      const r = await done;
+      run.abort.signal.removeEventListener('abort', onAbort);
+      return `### ${a.role} (${chat.model})\n${r.error ? 'Ошибка: ' + r.error : r.text || '(без ответа)'}`;
+    } catch (e) { return `### ${a.role}\nОшибка: ${e.message}`; }
+  }));
+  return 'Результаты агентов:\n\n' + results.join('\n\n');
+}
+
+// ---------- scheduled tasks ----------
+async function runScheduled(t, extras, gdrive) {
+  const user = store.db.users.find((u) => u.id === t.uid);
+  if (!user) throw new Error('пользователь удалён');
+  if (t.kind === 'backup') {
+    const msg = await extras.backup(user.id, user, gdrive, {});
+    notify.push(user.id, '💾 Резервная копия', msg);
+    return;
+  }
+  let chat = t.chatId && store.getChat(user.id, t.chatId);
+  if (!chat) throw new Error('чат задачи удалён');
+  if (t.newChatEach) {
+    const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
+    chat = { ...chat, id, title: '⏰ ' + t.name, messages: [], createdAt: Date.now(), claudeSessionId: null };
+    store.saveChat(user.id, chat);
+  }
+  if (runs.has(key(user.id, chat.id))) throw new Error('чат занят');
+  const { done } = await startRun(user, chat.id, `⏰ Задача по расписанию «${t.name}»:\n${t.prompt}`, [], { notify: false });
+  const r = await done;
+  notify.push(user.id, '⏰ ' + t.name, r.error ? 'Ошибка: ' + r.error : r.text || 'Выполнено', { chatId: chat.id });
+}
+
+async function rollback(uid, chatId, commit) {
+  const chat = store.getChat(uid, chatId);
+  if (!chat) throw new Error('Чат не найден');
+  if (runs.has(key(uid, chatId))) throw new Error('Сначала остановите ИИ');
+  const n = await history.restore(chat.workspace, commit);
+  addMessage(uid, chat, { role: 'event', content: `↩ Файлы проекта возвращены к состоянию до выбранного шага${n ? ` (удалено новых файлов: ${n})` : ''}` });
+  return n;
 }
 
 // ---------- forms (ask_user) ----------
@@ -205,6 +280,7 @@ function askForm(uid, chatId, run, form) {
     run.form = { public: pub, resolve };
     setStatus(uid, chatId, run, 'Ждёт вашего ответа в окне «' + (form.title || 'Ввод') + '»');
     emit(uid, chatId, { t: 'form', form: pub });
+    notify.push(uid, '🔑 Нужен ваш ответ', form.title || 'ИИ ждёт данные', { chatId });
     const done = (v) => { if (run.form && run.form.public.id === id) { run.form = null; emit(uid, chatId, { t: 'form_done', id }); resolve(v); } };
     run.form.done = done;
     const t = setTimeout(() => done({ cancelled: true }), 60 * 60000);
@@ -320,7 +396,7 @@ async function internalTool(token, name, args) {
   return { ...r, imagesData: (r.images || []).map(load).filter(Boolean) };
 }
 
-async function startRun(user, chatId, text, images) {
+async function startRun(user, chatId, text, images, opts = {}) {
   const uid = user.id;
   const k = key(uid, chatId);
   if (runs.has(k)) throw Object.assign(new Error('ИИ уже работает в этом чате — дождитесь или остановите'), { status: 409 });
@@ -334,7 +410,7 @@ async function startRun(user, chatId, text, images) {
   runs.set(k, run);
   emit(uid, chatId, { t: 'run_start' });
   broadcast(uid, { t: 'chats_changed' });
-  (async () => {
+  const done = (async () => {
     let error = null;
     try {
       fs.mkdirSync(chat.workspace, { recursive: true });
@@ -359,8 +435,15 @@ async function startRun(user, chatId, text, images) {
       runs.delete(k);
       emit(uid, chatId, { t: 'run_end', error });
       broadcast(uid, { t: 'chats_changed' });
+      if (!chat.parentId && !run.abort.signal.aborted && opts.notify !== false) {
+        const last = [...chat.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+        notify.push(uid, (error ? '⚠️ ' : '✓ ') + chat.title, error ? error : (last ? last.content : 'Готово'), { chatId });
+      }
     }
+    const last = [...chat.messages].reverse().find((m) => m.role === 'assistant' && m.content);
+    return { error, text: last ? last.content : '' };
   })();
+  return { done };
 }
 
 function stopRun(uid, chatId) {
@@ -372,4 +455,4 @@ function stopRun(uid, chatId) {
 // While a run is active its chat object is the source of truth (settings edits must go there).
 function liveChat(uid, chatId) { const r = runs.get(key(uid, chatId)); return r ? r.chat : null; }
 
-module.exports = { submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };
+module.exports = { runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };

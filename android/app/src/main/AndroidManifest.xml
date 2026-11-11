@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <queries>
         <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
@@ -39,6 +45,22 @@
                 <data android:scheme="kala" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".NotifyService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Receives notifications from the user's own Kala AI server" />
+        </service>
+
+        <receiver android:name=".BootReceiver" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /></intent-filter>
+        </receiver>
+
+        <receiver android:name=".KalaWidget" android:exported="false" android:label="Kala">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_info" />
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

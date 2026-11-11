@@ -69,6 +69,7 @@ async function anthropicStream(opts) {
   let text = '';
   const blocks = {};
   let stopReason = null;
+  const usage = { input: 0, output: 0, cost: null };
   for await (const data of sseLines(res)) {
     const ev = safeParse(data);
     if (ev.type === 'content_block_start') {
@@ -86,7 +87,7 @@ async function anthropicStream(opts) {
   const toolCalls = Object.keys(blocks).sort((a, b) => a - b).map((k) => blocks[k])
     .filter((b) => b.type === 'tool_use')
     .map((b) => ({ id: b.id, name: b.name, args: safeParse(b.json) }));
-  return { text, toolCalls, stopReason };
+  return { text, toolCalls, stopReason, usage };
 }
 
 // ---------------- OpenAI-compatible ----------------
@@ -132,15 +133,22 @@ function toOpenAI(system, messages, loadImage) {
 async function openaiStream(opts) {
   const { p, model, system, messages, tools, signal, onText, loadImage } = opts;
   const body = {
-    model, stream: true,
+    model, stream: true, stream_options: { include_usage: true },
     messages: toOpenAI(system, messages, loadImage),
     tools: tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } })),
   };
   const headers = { 'content-type': 'application/json' };
   if (p.apiKey) headers.Authorization = 'Bearer ' + p.apiKey;
   if (p.id === 'openrouter') { headers['HTTP-Referer'] = 'https://github.com/RomashkaFree991/kala'; headers['X-Title'] = 'Kala'; }
-  const res = await fetch(p.baseUrl.replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal, headers, body: JSON.stringify(body) });
+  if (p.id === 'openrouter') body.usage = { include: true };
+  let res = await fetch(p.baseUrl.replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal, headers, body: JSON.stringify(body) });
+  if (res.status === 400 || res.status === 422) {
+    const t = await res.text();
+    if (/stream_options|usage/i.test(t)) { delete body.stream_options; delete body.usage; res = await fetch(p.baseUrl.replace(/\/$/, '') + '/chat/completions', { method: 'POST', signal, headers, body: JSON.stringify(body) }); }
+    else throw new Error(p.name + ' ' + res.status + ': ' + t.slice(0, 1000));
+  }
   if (!res.ok) throw new Error(p.name + ' ' + res.status + ': ' + (await res.text()).slice(0, 1000));
+  const usage = { input: 0, output: 0, cost: null };
   let text = '', reasoning = '';
   const calls = [];
   let stopReason = null;
@@ -148,6 +156,7 @@ async function openaiStream(opts) {
     if (data === '[DONE]') break;
     const ev = safeParse(data);
     if (ev.error) throw new Error(p.name + ': ' + JSON.stringify(ev.error).slice(0, 800));
+    if (ev.usage) { usage.input = ev.usage.prompt_tokens || usage.input; usage.output = ev.usage.completion_tokens || usage.output; if (ev.usage.cost != null) usage.cost = ev.usage.cost; }
     const ch = ev.choices && ev.choices[0];
     if (!ch) continue;
     const d = ch.delta || {};
@@ -168,7 +177,7 @@ async function openaiStream(opts) {
   const toolCalls = calls.filter(Boolean).map((c, i) => ({
     id: c.id || 'call_' + Date.now().toString(36) + i, name: c.name, args: safeParse(c.args), extra: c.extra,
   }));
-  return { text, toolCalls, stopReason, reasoning };
+  return { text, toolCalls, stopReason, reasoning, usage };
 }
 
 function stream(opts) {

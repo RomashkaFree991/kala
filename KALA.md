@@ -1,6 +1,6 @@
 # Kala — ИИ-агент на своём сервере + Android-приложение
 
-**APK:** [`releases/Kala-1.0.2.apk`](releases/Kala-1.0.2.apk). После установки сервера APK также лежит по адресу `https://skkapap.fun/kala.apk`.
+**APK:** [`releases/Kala-1.1.0.apk`](releases/Kala-1.1.0.apk). После установки сервера APK также лежит по адресу `https://skkapap.fun/kala.apk`.
 
 ## Установка сервера (одна команда)
 

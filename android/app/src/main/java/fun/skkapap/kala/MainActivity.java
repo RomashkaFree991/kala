@@ -44,7 +44,9 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 
 public class MainActivity extends Activity {
-    private static final int REQ_FILE = 1, REQ_PHOTO = 2, REQ_PERM = 3;
+    private static final int REQ_FILE = 1, REQ_PHOTO = 2, REQ_PERM = 3, REQ_AUDIO = 4, REQ_NOTIF = 5;
+    static volatile boolean visible = false;
+    private android.webkit.PermissionRequest pendingPerm;
 
     private WebView web;
     private SharedPreferences prefs;
@@ -106,6 +108,21 @@ public class MainActivity extends Activity {
         });
         web.setWebChromeClient(new WebChromeClient() {
             @Override
+            public void onPermissionRequest(android.webkit.PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean audio = false;
+                    for (String r : request.getResources()) if (android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) audio = true;
+                    if (!audio) { request.deny(); return; }
+                    if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                        request.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                    } else {
+                        pendingPerm = request;
+                        requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+                    }
+                });
+            }
+
+            @Override
             public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = cb;
@@ -129,10 +146,27 @@ public class MainActivity extends Activity {
 
     private String getServer() { return prefs.getString("server", null); }
 
-    private void loadStart() {
+    private void loadStart() { loadStart(getIntent()); }
+    private void loadStart(Intent intent) {
         String server = getServer();
-        if (server == null || server.isEmpty()) web.loadUrl("file:///android_asset/setup.html");
-        else web.loadUrl(server + "/");
+        if (server == null || server.isEmpty()) { web.loadUrl("file:///android_asset/setup.html"); return; }
+        String q = "";
+        if (intent != null && intent.getStringExtra("chat") != null) q = "?chat=" + Uri.encode(intent.getStringExtra("chat"));
+        else if (intent != null && intent.getBooleanExtra("voice", false)) q = "?voice=1";
+        web.loadUrl(server + "/" + q);
+    }
+
+    @Override protected void onResume() { super.onResume(); visible = true; }
+    @Override protected void onPause() { super.onPause(); visible = false; }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQ_AUDIO && pendingPerm != null) {
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) pendingPerm.grant(new String[]{android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+            else pendingPerm.deny();
+            pendingPerm = null;
+        }
     }
 
     private void openExternal(String url) {
@@ -149,6 +183,8 @@ public class MainActivity extends Activity {
         // came back from browser login (kala://connected) — the page refreshes via websocket
         if (intent != null && intent.getData() != null && "kala".equals(intent.getData().getScheme())) {
             web.evaluateJavascript("window.dispatchEvent(new Event('kala-connected'))", null);
+        } else if (intent != null && (intent.getStringExtra("chat") != null || intent.getBooleanExtra("voice", false))) {
+            loadStart(intent);
         }
     }
 
@@ -353,6 +389,25 @@ public class MainActivity extends Activity {
         /** Listens on 127.0.0.1:53682 for the OAuth redirect (rclone Google login) and returns its URL. */
         @JavascriptInterface public void catchOAuth(String cbId) {
             startOAuthCatcher(cbId);
+        }
+
+        /** Background notifications service (long-poll to the server). */
+        @JavascriptInterface public void setBackground(boolean on, String server, String token) {
+            SharedPreferences.Editor e = prefs.edit().putBoolean("bg", on);
+            if (token != null && !token.isEmpty()) e.putString("token", token);
+            if (!on && (token == null || token.isEmpty())) e.remove("token");
+            e.apply();
+            runOnUiThread(() -> {
+                if (on) {
+                    if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
+                    try { NotifyService.start(MainActivity.this); } catch (Exception ignored) { }
+                } else NotifyService.stop(MainActivity.this);
+            });
+        }
+
+        @JavascriptInterface public void notify(String title, String body) {
+            NotifyService.show(MainActivity.this, title, body, null, (int) (System.currentTimeMillis() % 100000) + 10);
         }
 
         @JavascriptInterface public boolean hasStorage() { return MainActivity.this.hasStorage(); }

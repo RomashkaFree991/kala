@@ -122,6 +122,11 @@
     if (m.t === 'browser_frame') return onBrowserFrame(m);
     if (m.t === 'browser_nav') { const u = $('#burl'); if (u && document.activeElement !== u) u.value = m.url; return; }
     if (m.t === 'browser_closed') { hideBrowserMini(); return; }
+    if (m.t === 'notify') { if (!S.chat || m.item.chatId !== S.chat.id || document.hidden) { toast(m.item.title + (m.item.body ? ': ' + m.item.body.slice(0, 80) : '')); } if (A && A.notify && document.hidden) A.notify(m.item.title, m.item.body || ''); return; }
+    if (m.t === 'android_frame') { const a = $('#aimg'); if (a) { a.src = 'data:' + m.mime + ';base64,' + m.data; S.aframe = m; const w = $('.await'); if (w) w.remove(); } return; }
+    if (m.t === 'android_log') { const l = $('#alog'); if (l) { l.textContent = m.error ? 'Ошибка: ' + m.error : m.text; } if (m.done && !m.error && $('#apage')) setAndroidView(true); return; }
+    if (m.t === 'ollama') { const l = $('#olog'); if (l) l.textContent = m.error ? 'Ошибка: ' + m.error : (m.text || `${m.model}: ${m.status || ''} ${m.pct != null ? m.pct + '%' : ''}`); if (m.done) { const pg = $('#olpage'); if (pg) setTimeout(() => ollamaDraw && ollamaDraw(), 500); } return; }
+    if (m.t === 'term_out' || m.t === 'term_exit') { termEvent(m); return; }
     if (m.t === 'chats_changed') return loadChats();
     if (m.t === 'providers_changed') { S.models = null; if ($('#provpage')) renderProviders(); return; }
     if (!S.chat || m.chatId !== S.chat.id) return;
@@ -142,6 +147,7 @@
     } else if (m.t === 'form') { S.run.form = m.form; showFormSheet(m.form); }
     else if (m.t === 'form_done') { if (S.run.form && S.run.form.id === m.id) S.run.form = null; closeFormSheet(m.id); }
     else if (m.t === 'browser_active') showBrowserMini();
+    else if (m.t === 'android_active') { if (!$('#apage')) toast('ИИ работает с виртуальным Android — меню → Инструменты → Android'); }
     else if (m.t === 'msg') {
       if (!S.chat.messages.find((x) => x.id === m.message.id)) S.chat.messages.push(m.message);
       if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; }
@@ -204,7 +210,8 @@
   async function renderAuth() {
     let st = { registrationOpen: false, hasUsers: true };
     try { st = await api('/auth/status'); } catch {}
-    let mode = st.hasUsers ? 'login' : 'register';
+    const inviteQ = new URLSearchParams(location.search).get('invite') || '';
+    let mode = st.hasUsers && !inviteQ ? 'login' : 'register';
     const app = $('#app');
     const draw = () => {
       app.innerHTML = `<div class="center"><div class="card">
@@ -212,7 +219,7 @@
         <div class="muted">${mode === 'login' ? 'Вход на сервер ' + esc(location.host) : (st.hasUsers ? 'Регистрация по инвайт-коду' : 'Первый запуск: создайте аккаунт владельца')}</div>
         <input class="field" id="u" placeholder="Логин" autocomplete="username" autocapitalize="none">
         <input class="field" id="p" type="password" placeholder="Пароль" autocomplete="current-password">
-        ${mode === 'register' && st.hasUsers ? '<input class="field" id="inv" placeholder="Инвайт-код">' : ''}
+        ${mode === 'register' && st.hasUsers ? `<input class="field" id="inv" placeholder="Инвайт-код" value="${esc(inviteQ)}">` : ''}
         <div class="err" id="e"></div>
         <button class="btn primary block" id="go">${mode === 'login' ? 'Войти' : 'Создать аккаунт'}</button>
         ${st.hasUsers ? `<button class="btn block" id="sw">${mode === 'login' ? 'Регистрация (инвайт)' : 'У меня есть аккаунт'}</button>` : ''}
@@ -233,6 +240,7 @@
     draw();
   }
   function logout(silent) {
+    if (A && A.setBackground) try { A.setBackground(false, '', ''); } catch {}
     if (!silent && S.token) api('/auth/logout', { body: {} }).catch(() => {});
     S.token = ''; localStorage.removeItem('kala_token');
     try { S.ws && S.ws.close(); } catch {}
@@ -266,6 +274,11 @@
     renderDrawer();
     renderComposer();
     connectWs();
+    if (A && A.setBackground && localStorage.getItem('kala_bg') !== '0') { try { A.setBackground(true, location.origin, S.token); } catch {} }
+    const qp = new URLSearchParams(location.search);
+    if (qp.get('invite')) { api('/invites/join', { body: { code: qp.get('invite') } }).then(() => toast('Доступ к общему проекту получен')).catch(() => {}); history.replaceState(null, '', '/'); }
+    if (qp.get('chat')) { localStorage.setItem('kala_last_chat', qp.get('chat')); history.replaceState(null, '', '/'); }
+    if (qp.get('voice')) setTimeout(() => { const m = $('#mic'); if (m) m.click(); }, 1200);
     await loadChats();
     const last = localStorage.getItem('kala_last_chat');
     if (last && S.chats.find((c) => c.id === last)) loadChat(last);
@@ -284,15 +297,15 @@
         <button class="item" id="nprov">${ic('plug')}<span class="t">Подключения</span></button>
         <button class="item" id="nfiles">${ic('folder')}<span class="t">Файлы на сервере</span></button>
         <button class="item" id="nbrowser">${ic('globe')}<span class="t">Браузер ИИ</span></button>
-        <button class="item" id="nsecrets">${ic('key')}<span class="t">Секреты (.env)</span></button>
-        <button class="item" id="nskills">${ic('spark')}<span class="t">Скиллы и память</span></button>
+        <button class="item" id="ntools">${ic('grid')}<span class="t">Инструменты</span></button>
         ${A ? `<button class="item" id="nperm">${ic('phone')}<span class="t">Доступ к памяти телефона</span></button>` : ''}
+        ${A && A.setBackground ? `<button class="item" id="nbg">${ic('bell')}<span class="t">Уведомления в фоне: ${localStorage.getItem('kala_bg') === '0' ? 'выкл' : 'вкл'}</span></button>` : ''}
         ${A ? `<button class="item" id="nsrv">${ic('globe')}<span class="t">Сменить сервер</span></button>` : ''}
         <button class="item" id="nout">${ic('logout')}<span class="t">Выйти</span></button>
       </div>`;
     const list = $('#chatlist');
     for (const c of S.chats) {
-      const el = h(`<button class="item ${S.chat && S.chat.id === c.id ? 'sel' : ''}">${c.running ? '<span class="dot busy"></span>' : ic(c.serverAccess === 'full' ? 'server' : 'chat', 'sm')}<span class="t">${esc(c.title)}<small>${esc(c.model)} · ${esc(c.workspace.split('/').pop())} · ${timeAgo(c.updatedAt)}</small></span></button>`);
+      const el = h(`<button class="item ${S.chat && S.chat.id === c.id ? 'sel' : ''}">${c.running ? '<span class="dot busy"></span>' : ic(c.serverAccess === 'full' ? 'server' : 'chat', 'sm')}<span class="t" style="${c.parentId ? 'padding-left:10px;opacity:.8' : ''}">${esc(c.title)}<small>${esc(c.model)} · ${esc(c.workspace.split('/').pop())} · ${timeAgo(c.updatedAt)}</small></span></button>`);
       el.onclick = () => { toggleDrawer(false); loadChat(c.id); };
       list.appendChild(el);
     }
@@ -300,9 +313,9 @@
     $('#nprov').onclick = () => { toggleDrawer(false); providersPage(); };
     $('#nfiles').onclick = () => { toggleDrawer(false); filesPage(S.chat ? S.chat.workspace : ''); };
     $('#nbrowser').onclick = () => { toggleDrawer(false); browserPage(); };
-    $('#nsecrets').onclick = () => { toggleDrawer(false); secretsPage(); };
-    $('#nskills').onclick = () => { toggleDrawer(false); skillsPage(); };
+    $('#ntools').onclick = () => { toggleDrawer(false); toolsPage(); };
     if ($('#nperm')) $('#nperm').onclick = () => { A.requestStorage(); };
+    if ($('#nbg')) $('#nbg').onclick = () => { const on = localStorage.getItem('kala_bg') === '0'; localStorage.setItem('kala_bg', on ? '1' : '0'); A.setBackground(on, location.origin, S.token); toast(on ? 'Уведомления в фоне включены' : 'Выключены'); renderDrawer(); };
     if ($('#nsrv')) $('#nsrv').onclick = () => A.changeServer();
     $('#nout').onclick = () => { if (confirm('Выйти из аккаунта?')) logout(); };
   }
@@ -390,7 +403,8 @@
             <div class="tb"><div><div class="inner"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
             ${r ? `<div class="muted">Результат</div><pre>${esc(r.content)}</pre>` : `<div class="muted">Вывод</div><pre id="out-${esc(tc.id)}">${esc(live || '')}</pre>`}</div></div></div></div>`;
           if (r && r.images && r.images.length) html += `<div class="imgs">${r.images.map((i) => `<img src="${mediaUrl(i)}" data-full="${i}">`).join('')}</div>`;
-          if (r && r.file) html += `<div class="filecard"><span class="fi">${ic('package')}</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">${ic('download', 'sm')} Скачать</button></div>`;
+          if (r && r.file) html += `<div class="filecard"><span class="fi">${ic(/\.apk$/i.test(r.file.name) ? 'phone' : 'package')}</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="icon" data-qr="${esc(r.file.path)}" data-tok="${esc(r.file.share || '')}" title="QR для другого телефона">${ic('qr')}</button><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">${ic('download', 'sm')} Скачать</button></div>`;
+          if (r && (r.diff || r.before)) html += `<div class="toolacts">${r.diff ? `<button class="btn small" data-diff="${esc(r.diff)}">${ic('diff', 'sm')} Было → стало</button>` : ''}${r.before ? `<button class="btn small" data-rb="${esc(r.before)}">${ic('undo', 'sm')} Откатить сюда</button>` : ''}</div>`;
         }
         html += '</div>';
       } else if (m.role === 'event') {
@@ -416,6 +430,13 @@
     });
     box.querySelectorAll('[data-dl]').forEach((b) => b.onclick = () => downloadFile(b.dataset.dl, b.dataset.name));
     const sl = $('#sline'); if (sl) sl.onclick = () => { if (S.run.form) showFormSheet(S.run.form); };
+    box.querySelectorAll('[data-diff]').forEach((b) => b.onclick = () => diffPage(b.dataset.diff));
+    box.querySelectorAll('[data-qr]').forEach((b) => b.onclick = () => qrSheet(b.dataset.qr, b.dataset.tok));
+    box.querySelectorAll('[data-rb]').forEach((b) => b.onclick = async () => {
+      if (S.run.running) return toast('Сначала остановите ИИ');
+      if (!confirm('Вернуть все файлы проекта к состоянию ДО этого действия? Текущее состояние тоже сохранится в истории.')) return;
+      try { await api('/chats/' + S.chat.id + '/rollback', { body: { commit: b.dataset.rb } }); toast('Файлы откатены'); } catch (e) { toast(e.message); }
+    });
     box.querySelectorAll('img').forEach((im) => im.onclick = () => openExternal(im.src));
     if (stick) toBottom();
   }
@@ -428,6 +449,7 @@
     c.innerHTML = `<div class="pending" id="pend"></div><div class="box">
       <button class="icon" id="att" title="Прикрепить">${ic('clip')}</button>
       ${A ? `<button class="icon" id="cam" title="Фото">${ic('camera')}</button>` : ''}
+      <button class="icon" id="mic" title="Голосом">${ic('mic')}</button>
       <textarea id="inp" rows="1" placeholder="Опишите задачу…"></textarea>
       <button class="send ${S.run.running ? 'stop' : ''}" id="send">${S.run.running ? ic('stop') : ic('send')}</button></div>
       <input type="file" id="fileinp" multiple hidden>`;
@@ -438,6 +460,7 @@
     grow();
     $('#send').onclick = () => S.run.running ? stopRun() : send();
     $('#att').onclick = () => $('#fileinp').click();
+    $('#mic').onclick = toggleVoice;
     $('#fileinp').onchange = (e) => { for (const f of e.target.files) attachFile(f); e.target.value = ''; };
     if ($('#cam')) $('#cam').onclick = async () => {
       const r = await nativeAsync('takePhoto', 'back');
@@ -484,12 +507,44 @@
     const saved = { value: inp.value, pending: S.pending };
     inp.value = ''; inp.style.height = 'auto'; localStorage.removeItem('kala_draft_' + S.chat.id); S.pending = []; renderPending();
     try {
-      await api('/chats/' + S.chat.id + '/messages', { body: { text, images } });
+      await api('/chats/' + S.chat.id + '/messages', { body: { text, images, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } });
     } catch (e) {
       toast(e.message);
       const i = $('#inp'); if (i) i.value = saved.value; S.pending = saved.pending; renderPending();
     }
   }
+  // ---------------- voice messages ----------------
+  let rec = null;
+  async function toggleVoice() {
+    const btn = $('#mic');
+    if (rec) { rec.stop(); return; }
+    let stream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { return toast('Нет доступа к микрофону' + (A ? ' — разрешите его приложению Kala' : '')); }
+    const type = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+    const chunks = [];
+    rec = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    const started = Date.now();
+    const tick = setInterval(() => { const i = $('#inp'); if (i) i.placeholder = '● Запись ' + Math.floor((Date.now() - started) / 1000) + ' с — нажмите микрофон ещё раз'; }, 300);
+    rec.onstop = async () => {
+      clearInterval(tick); stream.getTracks().forEach((t) => t.stop());
+      const b = $('#mic'); if (b) b.classList.remove('rec');
+      const i = $('#inp'); if (i) i.placeholder = 'Расшифровываю…';
+      rec = null;
+      const blob = new Blob(chunks, { type: (type || 'audio/webm').split(';')[0] });
+      if (blob.size < 1000) { if (i) i.placeholder = 'Опишите задачу…'; return toast('Слишком короткая запись'); }
+      try {
+        const r = await fetch('/api/transcribe', { method: 'POST', headers: { Authorization: 'Bearer ' + S.token, 'Content-Type': blob.type }, body: blob });
+        const j = await r.json(); if (!r.ok) throw new Error(j.error);
+        const inp = $('#inp'); if (inp) { inp.value = (inp.value ? inp.value + ' ' : '') + j.text; inp.dispatchEvent(new Event('input')); inp.focus(); }
+      } catch (e) { toast(e.message); }
+      const i2 = $('#inp'); if (i2) i2.placeholder = 'Опишите задачу…';
+    };
+    rec.start();
+    btn.classList.add('rec');
+  }
+
   async function stopRun() { try { await api('/chats/' + S.chat.id + '/stop', { body: {} }); } catch (e) { toast(e.message); } }
 
   // ---------------- sheets ----------------
@@ -611,21 +666,32 @@
       <div class="muted" style="margin-top:12px">Папка проекта на сервере</div>
       <input class="field" id="proj" list="projs" placeholder="Новая папка (например my-game) или выберите">
       <datalist id="projs">${projects.projects.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
-      <div class="row wrap">${projects.projects.slice(0, 12).map((p) => `<button class="btn small" data-pj="${esc(p)}">${ic('folder', 'sm')} ${esc(p)}</button>`).join('')}</div>
+      <div class="row wrap">${projects.projects.slice(0, 12).map((p) => `<button class="btn small" data-pj="${esc(p)}">${ic('folder', 'sm')} ${esc(p)}</button>`).join('')}${(projects.shared || []).map((p) => `<button class="btn small" data-sp="${esc(p.path)}">${ic('users', 'sm')} ${esc(p.name)} <span class="muted">· ${esc(p.owner)}</span></button>`).join('')}</div>
+      <details style="margin-top:6px"><summary class="muted">${ic('github', 'sm')} Импорт из GitHub</summary>
+        <div class="row"><input class="field grow" id="ghrepo" placeholder="owner/repo или ссылка" autocapitalize="none"><button class="btn small" id="ghimp">Клонировать</button></div>
+        <div class="muted">Для приватных репозиториев добавьте GITHUB_TOKEN в «Секреты».</div></details>
       <div class="muted" style="margin-top:12px">Доступ к памяти телефона</div>
       ${phoneAccessHtml({ full: false, folders: [] })}
       <button class="btn primary block" id="create" style="margin-top:14px">Создать чат</button>`, (el, close) => {
       const drawSel = () => { $('#msel', el).innerHTML = sel ? `${ic('cpu', 'sm')} <span class="grow" style="text-align:left">${esc(sel.m)} <span class="muted">${esc((groups.find((g) => g.provider === sel.p) || {}).name || '')}</span></span> ${ic('down', 'sm')}` : 'Выбрать модель ▾'; };
       drawSel();
       $('#msel', el).onclick = () => pickModel(sel && sel.p, sel && sel.m, (p, m) => { sel = { p, m }; drawSel(); });
-      el.querySelectorAll('[data-pj]').forEach((b) => b.onclick = () => { $('#proj', el).value = b.dataset.pj; });
+      let sharedPath = null;
+      el.querySelectorAll('[data-pj]').forEach((b) => b.onclick = () => { $('#proj', el).value = b.dataset.pj; sharedPath = null; });
+      el.querySelectorAll('[data-sp]').forEach((b) => b.onclick = () => { sharedPath = b.dataset.sp; $('#proj', el).value = '(общий) ' + b.textContent.trim(); });
+      $('#ghimp', el).onclick = async (e) => {
+        e.target.disabled = true; e.target.textContent = 'Клонирую…';
+        try { const r = await api('/projects/github', { body: { repo: $('#ghrepo', el).value } }); $('#proj', el).value = r.project; sharedPath = null; toast(r.msg); }
+        catch (err) { toast(err.message); }
+        e.target.disabled = false; e.target.textContent = 'Клонировать';
+      };
       const getPA = bindPhoneAccess(el);
       const getSA = bindServerAccess(el);
       bindMaxAccess(el);
       $('#create', el).onclick = async () => {
         if (!sel) return toast('Выберите модель');
         try {
-          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: $('#proj', el).value, phoneAccess: getPA(), ...getSA() } });
+          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: sharedPath ? '' : $('#proj', el).value, sharedPath, phoneAccess: getPA(), ...getSA() } });
           localStorage.setItem('kala_last_model', JSON.stringify(sel));
           close(); await loadChats(); loadChat(r.chat.id);
           setTimeout(() => $('#inp') && $('#inp').focus(), 100);
@@ -870,13 +936,315 @@
     if (/\.(png|jpe?g|gif|webp|apk|aab|zip|pck|so|bin|mp4|mp3|ogg|wav|pdf|exe|jar|ttf|otf)$/i.test(it.name) || it.size > 2 * 1024 * 1024) return downloadFile(full, it.name);
     let r;
     try { r = await api('/fs/read?path=' + encodeURIComponent(full)); } catch (e) { return toast(e.message); }
+    await loadCM();
     page(it.name, (body, close, extra) => {
       extra.innerHTML = `<button class="icon" id="fsave">${ic('save')}</button><button class="icon" id="fdl">${ic('download')}</button>`;
       body.innerHTML = '<textarea class="code" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>';
+      body.classList.add('cmbody');
       const ta = $('textarea', body);
       ta.value = r.content;
-      $('#fsave', extra).onclick = async () => { try { await api('/fs/write', { body: { path: full, content: ta.value } }); toast('Сохранено'); } catch (e) { toast(e.message); } };
+      let cm = null;
+      try { cm = window.CodeMirror.fromTextArea(ta, { mode: cmMode(it.name), theme: 'kala', lineNumbers: true, lineWrapping: false, indentUnit: 2, tabSize: 2, inputStyle: 'contenteditable' }); setTimeout(() => cm.refresh(), 50); } catch {}
+      $('#fsave', extra).onclick = async () => { try { await api('/fs/write', { body: { path: full, content: cm ? cm.getValue() : ta.value } }); toast('Сохранено'); } catch (e) { toast(e.message); } };
       $('#fdl', extra).onclick = () => downloadFile(full, it.name);
+    });
+  }
+
+  // ---------------- vendor loaders ----------------
+  const loaded = {};
+  function loadScript(src) { return loaded[src] || (loaded[src] = new Promise((res, rej) => { const e = document.createElement('script'); e.src = src; e.onload = res; e.onerror = rej; document.head.appendChild(e); })); }
+  function loadCss(href) { if (loaded[href]) return; loaded[href] = 1; const l = document.createElement('link'); l.rel = 'stylesheet'; l.href = href; document.head.appendChild(l); }
+  async function loadCM() {
+    loadCss('/vendor/codemirror/lib/codemirror.css');
+    await loadScript('/vendor/codemirror/lib/codemirror.js');
+    await loadScript('/vendor/codemirror/addon/mode/simple.js').catch(() => {});
+    await loadScript('/vendor/codemirror/addon/mode/overlay.js').catch(() => {});
+    await Promise.all(['javascript', 'python', 'xml', 'css', 'clike', 'shell', 'markdown', 'yaml', 'sql', 'go', 'rust', 'php', 'properties', 'toml', 'dockerfile', 'nginx', 'groovy', 'jsx'].map((m) => loadScript(`/vendor/codemirror/mode/${m}/${m}.js`).catch(() => {})));
+    await loadScript('/vendor/codemirror/mode/htmlmixed/htmlmixed.js').catch(() => {});
+  }
+  function cmMode(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return ({ js: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'text/typescript', tsx: 'text/typescript-jsx', jsx: 'jsx', json: 'application/json', py: 'python', gd: 'python', html: 'htmlmixed', htm: 'htmlmixed', xml: 'xml', svg: 'xml', css: 'css', scss: 'text/x-scss', java: 'text/x-java', kt: 'text/x-kotlin', kts: 'text/x-kotlin', gradle: 'text/x-groovy', c: 'text/x-csrc', h: 'text/x-csrc', cpp: 'text/x-c++src', cs: 'text/x-csharp', sh: 'shell', bash: 'shell', md: 'markdown', yml: 'yaml', yaml: 'yaml', sql: 'sql', go: 'go', rs: 'rust', php: 'php', ini: 'properties', env: 'properties', properties: 'properties', toml: 'toml', conf: 'nginx' })[ext] || (name === 'Dockerfile' ? 'dockerfile' : 'text/plain');
+  }
+
+  // ---------------- diff "было → стало" ----------------
+  async function diffPage(id) {
+    let d;
+    try { d = await api('/diff/' + id); await loadScript('/vendor/diff/diff.min.js'); } catch (e) { return toast(e.message); }
+    page('Было → стало', (body) => {
+      const name = d.file.split('/').pop();
+      const parts = window.Diff.diffLines(d.before || '', d.after || '');
+      let add = 0, del = 0, html = '', ln1 = 1, ln2 = 1;
+      for (const p of parts) {
+        const lines = p.value.replace(/\n$/, '').split('\n');
+        for (const l of lines) {
+          if (p.added) { add++; html += `<div class="dl add"><span class="n"></span><span class="n">${ln2++}</span><span class="c">+ ${esc(l)}</span></div>`; }
+          else if (p.removed) { del++; html += `<div class="dl del"><span class="n">${ln1++}</span><span class="n"></span><span class="c">- ${esc(l)}</span></div>`; }
+          else { html += `<div class="dl"><span class="n">${ln1++}</span><span class="n">${ln2++}</span><span class="c">  ${esc(l)}</span></div>`; }
+        }
+      }
+      body.innerHTML = `<div class="crumbs">${esc(d.file)}</div><div class="row" style="margin:0 8px 8px"><span class="tag" style="color:var(--ok)">+${add}</span><span class="tag" style="color:var(--err)">−${del}</span>${d.before == null ? '<span class="tag">новый файл</span>' : ''}<span class="grow"></span><button class="btn small" id="onlych">Только изменения</button></div><div class="diff">${html}</div>`;
+      $('#onlych', body).onclick = (e) => { $('.diff', body).classList.toggle('only'); e.target.classList.toggle('primary'); };
+      document.title = name;
+    });
+  }
+
+  // ---------------- QR for files ----------------
+  async function qrSheet(pathf, tok) {
+    let url;
+    try { const r = await api('/share', { body: { path: pathf } }); url = r.url; } catch (e) { return toast(e.message); }
+    sheet(`<h3>${ic('qr')} Установить на другом телефоне</h3>
+      <p class="muted">Отсканируйте камерой другого телефона — файл скачается. Ссылка работает 7 дней.</p>
+      <div style="background:#fff;border-radius:18px;padding:14px;margin:8px auto;max-width:280px"><img src="${authUrl('/api/qr?text=' + encodeURIComponent(url))}" style="width:100%;display:block"></div>
+      <input class="field" readonly value="${esc(url)}" onclick="this.select()">
+      <button class="btn primary block" id="qcopy">Копировать ссылку</button>`, (el) => {
+      $('#qcopy', el).onclick = () => { navigator.clipboard && navigator.clipboard.writeText(url).then(() => toast('Скопировано'), () => toast(url)); };
+    });
+  }
+
+  // ---------------- tools grid ----------------
+  function toolsPage() {
+    const tiles = [
+      ['terminal', 'Терминал', 'SSH-консоль сервера', termPage, true],
+      ['activity', 'Сервер', 'CPU, память, диск, тревоги', monitorPage, true],
+      ['phone', 'Виртуальный Android', 'Телефон для ИИ на сервере', androidPage, true],
+      ['clock', 'Расписание', 'Задачи и автопостинг', schedulePage],
+      ['coins', 'Расходы', 'Токены и деньги', usagePage],
+      ['key', 'Секреты (.env)', 'Токены и ключи', secretsPage],
+      ['spark', 'Скиллы и память', 'Что ИИ знает и умеет', skillsPage],
+      ['users', 'Общие проекты', 'Пригласить друга', sharePage],
+      ['globe', 'Сайты', 'Опубликованные поддомены', sitesPage],
+      ['cpu', 'Локальные модели', 'Ollama на сервере', ollamaPage, true],
+      ['cloud', 'Резервные копии', 'В Google Диск', backupPage],
+    ].filter((t) => !t[4] || (S.user && S.user.admin));
+    page('Инструменты', (body, close) => {
+      body.innerHTML = '<div class="grid">' + tiles.map((t, i) => `<button class="tile" data-i="${i}"><span class="ti">${ic(t[0])}</span><b>${t[1]}</b><small>${t[2]}</small></button>`).join('') + '</div>';
+      body.querySelectorAll('[data-i]').forEach((b) => b.onclick = () => tiles[+b.dataset.i][3]());
+    });
+  }
+
+  // ---------------- terminal ----------------
+  let term = null;
+  function termEvent(m) {
+    if (!term) return;
+    if (m.t === 'term_out') term.write(Uint8Array.from(atob(m.data), (c) => c.charCodeAt(0)));
+    else term.write('\r\n\x1b[90m[сессия завершена — нажмите ↻]\x1b[0m\r\n');
+  }
+  async function termPage() {
+    loadCss('/vendor/xterm/css/xterm.css');
+    try { await loadScript('/vendor/xterm/lib/xterm.js'); await loadScript('/vendor/xterm-fit/lib/addon-fit.js'); } catch { return toast('Не удалось загрузить терминал'); }
+    page('Терминал', (body, close, extra) => {
+      extra.innerHTML = `<button class="icon" data-re title="Новая сессия">${ic('refresh')}</button>`;
+      body.classList.add('termbody');
+      body.innerHTML = `<div id="term"></div><div class="tkeys">${['Esc', 'Tab', 'Ctrl+C', 'Ctrl+D', 'Ctrl+L', '↑', '↓', '←', '→', '|', '/', '-', '~'].map((k) => `<button class="btn small" data-key="${k}">${k}</button>`).join('')}</div>`;
+      term = new window.Terminal({ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, cursorBlink: true, theme: { background: '#050505', foreground: '#e5e5e5', cursor: '#ffffff', selectionBackground: '#444' }, scrollback: 5000 });
+      const fit = new window.FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.open($('#term', body));
+      const send = (d) => S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ t: 'term_in', data: btoa(unescape(encodeURIComponent(d))) }));
+      const open = () => { try { fit.fit(); } catch {} term.reset(); S.ws.send(JSON.stringify({ t: 'term_open', cols: term.cols, rows: term.rows, cwd: S.chat ? S.chat.workspace : '' })); term.focus(); };
+      term.onData(send);
+      setTimeout(open, 150);
+      const KEYS = { Esc: '\x1b', Tab: '\t', 'Ctrl+C': '\x03', 'Ctrl+D': '\x04', 'Ctrl+L': '\x0c', '↑': '\x1b[A', '↓': '\x1b[B', '→': '\x1b[C', '←': '\x1b[D' };
+      body.querySelectorAll('[data-key]').forEach((b) => b.onclick = () => { send(KEYS[b.dataset.key] || b.dataset.key); term.focus(); });
+      $('[data-re]', extra).onclick = open;
+      const pg = body.parentElement;
+      const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); S.ws && S.ws.send('{"t":"term_close"}'); term.dispose(); term = null; } });
+      obs.observe(document.body, { childList: true });
+    });
+  }
+
+  // ---------------- monitor ----------------
+  function spark(points, key, max, color) {
+    if (!points.length) return '';
+    const w = 300, h = 60, mx = max || Math.max(1, ...points.map((p) => p[key]));
+    const xs = (i) => (i / Math.max(1, points.length - 1)) * w, ys = (v) => h - (v / mx) * (h - 4) - 2;
+    const d = points.map((p, i) => (i ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(p[key]).toFixed(1)).join(' ');
+    return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark"><path d="${d} L ${w} ${h} L 0 ${h} Z" fill="${color}" opacity=".12"/><path d="${d}" fill="none" stroke="${color}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`;
+  }
+  function monitorPage() {
+    page('Сервер', (body, close) => {
+      let timer;
+      const gb = (b) => (b / 1073741824).toFixed(1) + ' ГБ';
+      const rate = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + ' МБ/с' : (b / 1024).toFixed(0) + ' КБ/с';
+      const draw = async () => {
+        if (!document.body.contains(body)) return clearInterval(timer);
+        let m; try { m = await api('/monitor'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        const card = (title, val, sub, key, max, color) => `<div class="mcard"><div class="row"><b>${title}</b><span class="grow"></span><span class="big">${val}</span></div><div class="muted">${sub}</div>${spark(m.history, key, max, color)}</div>`;
+        body.innerHTML = `<div class="muted" style="margin:0 2px 10px">${esc(m.host)} · ${m.cpus} ядер · аптайм ${(m.uptime / 86400).toFixed(1)} дн · нагрузка ${m.load.map((x) => x.toFixed(2)).join(' ')}</div>
+          ${card('Процессор', m.now.cpu + '%', 'за последние 24 часа', 'cpu', 100, '#ffffff')}
+          ${card('Память', m.now.mem + '%', gb(m.mem.used) + ' из ' + gb(m.mem.total), 'mem', 100, '#7ee2a8')}
+          ${card('Диск', m.now.disk + '%', m.disk ? 'свободно ' + gb(m.disk.free) + ' из ' + gb(m.disk.total) : '', 'disk', 100, m.now.disk > 90 ? '#ff8080' : '#f3c969')}
+          ${card('Сеть', '↓ ' + rate(m.now.rx), '↑ ' + rate(m.now.tx), 'rx', 0, '#8ab4ff')}
+          <div class="label">Процессы</div>${m.procs.map((p) => `<div class="fsrow" style="cursor:default"><span class="n" style="font:12px var(--mono)">${esc(p.cmd)}</span><span class="muted">${p.cpu}% · ${p.mem}%</span></div>`).join('')}
+          <div class="label">Боты и службы Kala</div>${m.services.length ? m.services.map((x) => `<div class="fsrow" style="cursor:default"><span class="dot ${x.active === 'active' ? 'on' : ''}"></span><span class="n">${esc(x.unit)}</span><span class="muted">${esc(x.sub)}</span></div>`).join('') : '<div class="muted">Пока нет</div>'}
+          <p class="muted">Тревоги (диск > 90%, память > 92%, CPU > 95% 5 мин) приходят уведомлением.</p>`;
+      };
+      draw(); timer = setInterval(draw, 15000);
+    });
+  }
+
+  // ---------------- virtual Android ----------------
+  S.aview = false;
+  function setAndroidView(on) { if (S.aview === on) return; S.aview = on; S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ t: 'android_view', on })); }
+  async function androidPage() {
+    let st = {};
+    try { st = await api('/android'); } catch {}
+    page('Виртуальный Android', (body, close) => {
+      body.classList.add('bbody');
+      const pg = body.parentElement; pg.id = 'apage';
+      body.innerHTML = `<div class="muted" id="alog">${st.running ? 'Запущен' : 'Не запущен. Нужен Docker и модуль binder (на KVM-серверах обычно есть).'}</div>
+        ${st.running ? '' : `<button class="btn primary block" id="astart">${ic('phone', 'sm')} Запустить виртуальный телефон</button>`}
+        <div class="bwrap phonewrap"><img id="aimg" alt="">${st.running ? '<div class="muted await"><span class="spin"></span> Загрузка экрана…</div>' : ''}</div>
+        <div class="bkeys"><input class="field grow" id="atext" placeholder="Ввести текст…" autocapitalize="none"><button class="icon" data-k="back">${ic('back')}</button><button class="icon" data-k="home">${ic('circle')}</button><button class="icon" data-k="Enter">${ic('send', 'sm')}</button></div>
+        <p class="muted" style="text-align:center;margin:4px 0 0">Нажатие — тап, свайп — прокрутка. ИИ ставит сюда собранные APK и тестирует их.</p>`;
+      if ($('#astart', body)) $('#astart', body).onclick = async (e) => { e.target.disabled = true; try { await api('/android/start', { body: {} }); $('#alog', body).textContent = 'Запуск… (первый раз до 10 минут)'; } catch (err) { toast(err.message); e.target.disabled = false; } };
+      const img = $('#aimg', body);
+      if (S.aframe) img.src = 'data:' + S.aframe.mime + ';base64,' + S.aframe.data;
+      const inp = (ev) => S.ws && S.ws.send(JSON.stringify({ t: 'android_input', ev }));
+      let start = null;
+      img.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY }; });
+      img.addEventListener('pointerup', (e) => {
+        if (!start) return; const rc = img.getBoundingClientRect(); const dy = e.clientY - start.y, dx = e.clientX - start.x;
+        if (Math.abs(dy) < 10 && Math.abs(dx) < 10) inp({ type: 'click', x: (e.clientX - rc.left) / rc.width, y: (e.clientY - rc.top) / rc.height });
+        else inp({ type: 'scroll', x: (start.x - rc.left) / rc.width, y: (start.y - rc.top) / rc.height, dy: -dy * ((S.aframe ? S.aframe.h : 1440) / rc.height) });
+        start = null;
+      });
+      body.querySelectorAll('[data-k]').forEach((b) => b.onclick = () => inp(b.dataset.k === 'Enter' ? { type: 'key', key: 'Enter' } : { type: b.dataset.k }));
+      $('#atext', body).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); if (e.target.value) inp({ type: 'text', text: e.target.value }); e.target.value = ''; } };
+      if (st.running) setAndroidView(true);
+      const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); setAndroidView(false); } });
+      obs.observe(document.body, { childList: true });
+    });
+  }
+
+  // ---------------- schedules ----------------
+  function schedulePage() {
+    page('Расписание', (body) => {
+      const draw = async () => {
+        let d; try { d = await api('/schedules'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Проще всего попросить в чате: «каждое утро в 9:00 проверяй мой сайт и присылай отчёт» или «каждый день в 18:00 делай пост в @канал с картинкой». Итог приходит уведомлением.</p><div id="sl"></div>`;
+        const list = $('#sl', body);
+        if (!d.tasks.length) list.innerHTML = '<div class="muted">Задач пока нет.</div>';
+        for (const t of d.tasks) {
+          const el = h(`<div class="prov" style="padding:12px"><h4 style="font-size:14px"><span class="pi">${ic(t.kind === 'backup' ? 'cloud' : 'clock', 'sm')}</span>${esc(t.name)}<span class="badge" style="${t.enabled ? '' : 'color:var(--fg3);border-color:var(--line);background:none'}">${t.enabled ? 'вкл' : 'выкл'}</span></h4>
+            <p style="margin:6px 0">${esc(t.human)} · ${esc(t.tz)}${t.next ? ' · след. ' + new Date(t.next).toLocaleString() : ''}</p>
+            ${t.prompt ? `<div class="muted" style="white-space:pre-wrap">${esc(t.prompt.slice(0, 300))}</div>` : ''}
+            ${t.lastRun ? `<div class="muted" style="margin-top:4px">Последний запуск: ${new Date(t.lastRun).toLocaleString()} — ${esc(t.lastStatus)}</div>` : ''}
+            <div class="row wrap" style="margin-top:8px"><button class="btn small" data-a="run">${ic('send', 'sm')} Запустить сейчас</button><button class="btn small" data-a="tog">${t.enabled ? 'Выключить' : 'Включить'}</button>${t.chatId ? '<button class="btn small" data-a="chat">Чат</button>' : ''}<button class="btn small danger" data-a="del">Удалить</button></div></div>`);
+          $('[data-a=run]', el).onclick = async () => { await api('/schedules/' + t.id + '/run', { body: {} }); toast('Запущено'); setTimeout(draw, 1500); };
+          $('[data-a=tog]', el).onclick = async () => { await api('/schedules/' + t.id, { method: 'PATCH', body: { enabled: !t.enabled } }); draw(); };
+          $('[data-a=del]', el).onclick = async () => { if (confirm('Удалить задачу?')) { await api('/schedules/' + t.id, { method: 'DELETE' }); draw(); } };
+          if ($('[data-a=chat]', el)) $('[data-a=chat]', el).onclick = () => { document.querySelectorAll('.page').forEach((p) => p.remove()); loadChat(t.chatId); };
+          list.appendChild(el);
+        }
+      };
+      draw();
+    });
+  }
+
+  // ---------------- usage ----------------
+  function usagePage() {
+    page('Расходы', async (body) => {
+      let u; try { u = await api('/usage'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+      const days = Object.keys(u.days).sort().reverse();
+      const sum = (pred) => { let c = 0, i = 0, o = 0; for (const d of days.filter(pred)) for (const v of Object.values(u.days[d])) { c += v.cost; i += v.input; o += v.output; } return { c, i, o }; };
+      const today = new Date().toISOString().slice(0, 10), month = today.slice(0, 7);
+      const t = sum((d) => d === today), m = sum((d) => d.startsWith(month)), all = sum(() => true);
+      const money = (c) => '$' + c.toFixed(c < 1 ? 3 : 2), tok = (n) => n > 1e6 ? (n / 1e6).toFixed(2) + 'M' : n > 1e3 ? (n / 1e3).toFixed(1) + 'K' : n;
+      const byModel = {};
+      for (const d of days.filter((x) => x.startsWith(month))) for (const [k, v] of Object.entries(u.days[d])) { const b = (byModel[k] = byModel[k] || { input: 0, output: 0, cost: 0, calls: 0, unknown: false }); b.input += v.input; b.output += v.output; b.cost += v.cost; b.calls += v.calls; b.unknown = b.unknown || v.unknown; }
+      const series = days.slice(0, 30).reverse().map((d) => ({ cost: Object.values(u.days[d]).reduce((a, v) => a + v.cost, 0) }));
+      body.innerHTML = `<div class="grid3"><div class="mcard"><div class="muted">Сегодня</div><div class="big">${money(t.c)}</div><div class="muted">${tok(t.i + t.o)} ток.</div></div>
+        <div class="mcard"><div class="muted">Месяц</div><div class="big">${money(m.c)}</div><div class="muted">${tok(m.i + m.o)} ток.</div></div>
+        <div class="mcard"><div class="muted">Всего</div><div class="big">${money(all.c)}</div><div class="muted">${tok(all.i + all.o)} ток.</div></div></div>
+        <div class="mcard"><b>По дням (30 дней)</b>${spark(series, 'cost', 0, '#ffffff')}</div>
+        <div class="label">Модели в этом месяце</div>
+        ${Object.entries(byModel).sort((a, b) => b[1].cost - a[1].cost).map(([k, v]) => { const [pv, md] = k.split('|'); return `<div class="fsrow" style="cursor:default"><span class="n"><b>${esc(md)}</b><small class="muted" style="display:block">${esc(pv)} · ${v.calls} запросов · ${tok(v.input)} вход / ${tok(v.output)} выход</small></span><span>${v.unknown && !v.cost ? '—' : money(v.cost)}</span></div>`; }).join('') || '<div class="muted">Пока нет данных</div>'}
+        <p class="muted">Стоимость примерная по публичным ценам; для OpenRouter — точная. Claude Code и Ollama — по подписке/бесплатно.</p>`;
+    });
+  }
+
+  // ---------------- shared projects ----------------
+  function sharePage() {
+    page('Общие проекты', (body) => {
+      const draw = async () => {
+        let d, pr; try { [d, pr] = await Promise.all([api('/shares'), api('/projects')]); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Пригласите друга: он зарегистрируется по ссылке (или введёт код, если уже есть аккаунт) и получит доступ к файлам проекта — сможет создавать в нём свои чаты с ИИ.</p>
+          <div class="label">Пригласить в проект</div>
+          <select class="field" id="shp">${pr.projects.map((p) => `<option>${esc(p)}</option>`).join('')}</select>
+          <button class="btn primary block" id="shinv">${ic('users', 'sm')} Создать приглашение</button>
+          <div id="shout"></div>
+          <div class="label">Мои общие проекты</div>
+          ${d.mine.length ? d.mine.map((s) => `<div class="fsrow" style="cursor:default"><span class="fi">${ic('folder')}</span><span class="n">${esc(s.project)}<small class="muted" style="display:block">${s.memberNames.map(esc).join(', ') || 'пока никого'}</small></span></div>`).join('') : '<div class="muted">Нет</div>'}
+          <div class="label">Мне открыли доступ</div>
+          ${d.withMe.length ? d.withMe.map((s) => `<div class="fsrow" style="cursor:default"><span class="fi">${ic('users')}</span><span class="n">${esc(s.project)}<small class="muted" style="display:block">от ${esc(s.ownerName)}</small></span></div>`).join('') : '<div class="muted">Нет</div>'}
+          <div class="label">Есть код приглашения?</div>
+          <div class="row"><input class="field grow" id="shcode" placeholder="Код"><button class="btn small" id="shjoin">Войти</button></div>`;
+        $('#shinv', body).onclick = async () => {
+          try {
+            const r = await api('/invites', { body: { project: $('#shp', body).value } });
+            $('#shout', body).innerHTML = `<div class="mcard" style="margin-top:8px"><div class="muted">Ссылка-приглашение (до 5 человек):</div><input class="field" readonly value="${esc(r.link)}"><div class="muted">Код: <b style="font-family:var(--mono)">${esc(r.code)}</b></div><div style="background:#fff;border-radius:14px;padding:10px;max-width:200px;margin:8px auto"><img src="${authUrl('/api/qr?text=' + encodeURIComponent(r.link))}" style="width:100%;display:block"></div><button class="btn block" id="shcopy">Копировать ссылку</button></div>`;
+            $('#shcopy', body).onclick = () => navigator.clipboard && navigator.clipboard.writeText(r.link).then(() => toast('Скопировано'));
+          } catch (e) { toast(e.message); }
+        };
+        $('#shjoin', body).onclick = async () => { try { await api('/invites/join', { body: { code: $('#shcode', body).value } }); toast('Доступ получен'); draw(); } catch (e) { toast(e.message); } };
+      };
+      draw();
+    });
+  }
+
+  // ---------------- sites ----------------
+  function sitesPage() {
+    page('Сайты', (body) => {
+      const draw = async () => {
+        let d; try { d = await api('/sites'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Попросите ИИ: «опубликуй сайт из папки dist как shop» — он появится на <b>shop.${esc(d.domain || 'ваш-домен')}</b> с HTTPS. Один раз добавьте у регистратора DNS-запись <code>*.${esc(d.domain || 'домен')}</code> → IP сервера.</p>` +
+          (d.sites.length ? d.sites.map((x) => `<div class="fsrow" style="cursor:default"><span class="fi">${ic('globe')}</span><span class="n"><a href="${x.ssl ? 'https' : 'http'}://${esc(x.host)}" data-ext="1">${esc(x.host)}</a><small class="muted" style="display:block">${esc(x.dir || 'порт ' + x.port)}</small></span><button class="icon" data-del="${esc(x.name)}">${ic('trash', 'sm')}</button></div>`).join('') : '<div class="muted">Пока нет сайтов</div>');
+        body.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { if (confirm('Снять сайт с публикации?')) { try { await api('/sites/' + b.dataset.del, { method: 'DELETE' }); draw(); } catch (e) { toast(e.message); } } });
+      };
+      draw();
+    });
+  }
+
+  // ---------------- Ollama ----------------
+  let ollamaDraw = null;
+  function ollamaPage() {
+    page('Локальные модели (Ollama)', (body) => {
+      body.parentElement.id = 'olpage';
+      const POP = [['qwen2.5-coder:7b', 'Код, 4.7 ГБ'], ['llama3.2:3b', 'Быстрая, 2 ГБ'], ['gemma3:4b', 'Google, 3.3 ГБ'], ['deepseek-r1:7b', 'Размышления, 4.7 ГБ'], ['qwen3:8b', 'Универсальная, 5 ГБ'], ['mistral:7b', '4.1 ГБ']];
+      ollamaDraw = async () => {
+        let st; try { st = await api('/ollama'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Бесплатные модели прямо на вашем сервере — без ключей и интернета. Нужно много памяти: 7B-модели ≈ 8 ГБ ОЗУ.</p>
+          <div class="mcard"><b>Статус:</b> ${st.running ? '<span class="ok">работает</span>' : st.installed ? 'установлен, не запущен' : 'не установлен'}<div class="muted" id="olog"></div></div>
+          ${st.installed ? '' : `<button class="btn primary block" id="oinst">${ic('download', 'sm')} Установить Ollama</button>`}
+          <div class="label">Скачанные модели</div>${st.models.length ? st.models.map((m) => `<div class="fsrow" style="cursor:default"><span class="fi">${ic('cpu')}</span><span class="n">${esc(m.name)}</span><span class="muted">${fmtSize(m.size)}</span></div>`).join('') : '<div class="muted">Нет</div>'}
+          <div class="label">Скачать</div>${POP.map(([m, d]) => `<div class="fsrow" style="cursor:default"><span class="n"><b style="font-family:var(--mono);font-size:13px">${m}</b><small class="muted" style="display:block">${d}</small></span><button class="btn small" data-pull="${m}" ${st.running ? '' : 'disabled'}>Скачать</button></div>`).join('')}
+          <div class="row" style="margin-top:6px"><input class="field grow" id="ocustom" placeholder="Другая модель (ollama.com/library)"><button class="btn small" id="opull" ${st.running ? '' : 'disabled'}>Скачать</button></div>`;
+        if ($('#oinst', body)) $('#oinst', body).onclick = async (e) => { e.target.disabled = true; try { await api('/ollama/install', { body: {} }); $('#olog', body).textContent = 'Установка…'; } catch (err) { toast(err.message); } };
+        const pull = async (m) => { try { await api('/ollama/pull', { body: { model: m } }); $('#olog', body).textContent = 'Скачиваю ' + m + '…'; } catch (e) { toast(e.message); } };
+        body.querySelectorAll('[data-pull]').forEach((b) => b.onclick = () => pull(b.dataset.pull));
+        $('#opull', body).onclick = () => pull($('#ocustom', body).value.trim());
+      };
+      ollamaDraw();
+    });
+  }
+
+  // ---------------- backups ----------------
+  function backupPage() {
+    page('Резервные копии', async (body) => {
+      let g = {}; try { g = await api('/gdrive'); } catch {}
+      let sch = []; try { sch = (await api('/schedules')).tasks.filter((t) => t.kind === 'backup'); } catch {}
+      body.innerHTML = `<p class="muted" style="margin-top:0">Чаты, настройки, секреты (в зашифрованном виде), скиллы, память и проекты (без node_modules/build) упаковываются в архив и загружаются в Google Диск, папка «Kala Backups».</p>
+        ${g.connected ? '' : '<div class="err">Сначала подключите Google Диск: меню → Подключения.</div>'}
+        <button class="btn primary block" id="bnow" ${g.connected ? '' : 'disabled'}>${ic('cloud', 'sm')} Сделать копию сейчас</button>
+        <div class="label">Автоматически</div>
+        ${sch.length ? sch.map((t) => `<div class="fsrow" style="cursor:default"><span class="fi">${ic('clock')}</span><span class="n">${esc(t.human)}</span><button class="icon" data-del="${t.id}">${ic('trash', 'sm')}</button></div>`).join('') : '<div class="muted">Не настроено</div>'}
+        <div class="row" style="margin-top:8px"><select class="field grow" id="bfreq"><option value="0 3 * * *">Каждый день в 03:00</option><option value="0 3 * * 1">Каждый понедельник</option><option value="0 */6 * * *">Каждые 6 часов</option></select><button class="btn small" id="badd" ${g.connected ? '' : 'disabled'}>Добавить</button></div>
+        <div class="muted" id="bmsg" style="margin-top:8px"></div>`;
+      $('#bnow', body).onclick = async (e) => { e.target.disabled = true; $('#bmsg', body).textContent = 'Упаковываю и загружаю…'; try { const r = await api('/backup', { body: {} }); $('#bmsg', body).textContent = r.msg; } catch (err) { $('#bmsg', body).textContent = 'Ошибка: ' + err.message; } e.target.disabled = false; };
+      $('#badd', body).onclick = async () => { await api('/schedules', { body: { name: 'Резервная копия', kind: 'backup', cron: $('#bfreq', body).value, tz: Intl.DateTimeFormat().resolvedOptions().timeZone } }); toast('Добавлено'); backupPage(); };
+      body.querySelectorAll('[data-del]').forEach((b) => b.onclick = async () => { await api('/schedules/' + b.dataset.del, { method: 'DELETE' }); toast('Удалено'); });
     });
   }
 

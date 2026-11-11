@@ -14,6 +14,16 @@ const gdrive = require('./gdrive');
 const secrets = require('./secrets');
 const skills = require('./skills');
 const browser = require('./browser');
+const notify = require('./notify');
+const scheduler = require('./scheduler');
+const history = require('./history');
+const monitor = require('./monitor');
+const usage = require('./usage');
+const sites = require('./sites');
+const media = require('./media');
+const extras = require('./extras');
+const android = require('./android');
+const QRCode = require('qrcode');
 
 const app = express();
 app.set('trust proxy', true);
@@ -24,11 +34,15 @@ const wrap = (fn) => (req, res) => Promise.resolve().then(() => fn(req, res)).ca
 });
 const publicUrl = (req) => cfg.PUBLIC_URL || `${req.protocol}://${req.get('host')}`;
 const userRoot = (u) => path.join(cfg.WORKSPACES_DIR, u.username);
+function sharedRoots(user) {
+  return auth.sharesFor(user.id).map((s) => path.join(cfg.WORKSPACES_DIR, s.ownerName, s.project));
+}
 function resolveFsPath(user, p) {
   const root = userRoot(user);
   fs.mkdirSync(root, { recursive: true });
   const full = path.resolve(root, p || '.');
-  if (!user.admin && !(full === root || full.startsWith(root + path.sep))) throw auth.httpError(403, 'Нет доступа к ' + full);
+  const inside = (r) => full === r || full.startsWith(r + path.sep);
+  if (!user.admin && !inside(root) && !sharedRoots(user).some(inside)) throw auth.httpError(403, 'Нет доступа к ' + full);
   return full;
 }
 
@@ -63,6 +77,13 @@ app.get('/api/oauth/google/callback', wrap(async (req, res) => {
   } catch (e) { ok = false; msg = e.message; }
   res.type('html').send(`<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><body style="font-family:Inter,system-ui,sans-serif;background:#0a0a0a;color:#f5f5f5;display:flex;align-items:center;justify-content:center;height:90vh;text-align:center;padding:20px"><div><h2>${ok ? '✓' : '✕'} ${msg.replace(/</g, '&lt;')}</h2><p><a style="color:#fff" href="kala://connected">Открыть Kala</a></p></div><script>setTimeout(()=>location.href='kala://connected',900)</script></body>`);
 }));
+
+app.get('/dl/:token/:name?', (req, res) => {
+  const l = extras.getLink(req.params.token);
+  if (!l || !fs.existsSync(l.file)) return res.status(404).type('html').send('<h3 style="font-family:sans-serif">Ссылка устарела или файл удалён</h3>');
+  if (l.name.endsWith('.apk')) res.type('application/vnd.android.package-archive');
+  res.download(l.file, l.name);
+});
 
 app.get('/api/media/:id', (req, res, next) => auth.middleware(req, res, () => {
   try { res.sendFile(store.mediaPath(req.user.id, req.params.id)); } catch { res.status(404).end(); }
@@ -128,6 +149,88 @@ api.post('/claude-login/start', wrap(async (req, res) => {
 }));
 api.post('/claude-login/finish', wrap(async (req, res) => { await providers.claudeLoginFinish(req.user.id, req.body.code); res.json({ ok: true }); }));
 
+// ---------- rollback & diffs ----------
+api.post('/chats/:id/rollback', wrap(async (req, res) => res.json({ ok: true, removed: await agent.rollback(req.user.id, req.params.id, String(req.body.commit || '')) })));
+api.get('/diff/:id', wrap((req, res) => res.json(history.loadDiff(req.user.id, req.params.id))));
+
+// ---------- notifications (long-poll for the Android background service) ----------
+api.get('/notify/poll', wrap(async (req, res) => res.json(await notify.poll(req.user.id, Number(req.query.since) || 0, Math.min(Number(req.query.wait) || 50, 55) * 1000))));
+api.get('/widget', (req, res) => {
+  const chats = store.listChats(req.user.id);
+  const running = chats.filter((c) => agent.runState(req.user.id, c.id).running).length;
+  require('child_process').execFile('systemctl', ['list-units', '--type=service', '--no-legend', '--plain', 'kala-*'], { timeout: 4000 }, (e, out) => {
+    const svcs = e ? [] : out.trim().split('\n').filter(Boolean).map((l) => l.trim().split(/\s+/));
+    res.json({ running, bots: svcs.length, botsUp: svcs.filter((x) => x[2] === 'active').length, last: chats[0] ? chats[0].title : '' });
+  });
+});
+
+// ---------- voice ----------
+api.post('/transcribe', express.raw({ type: () => true, limit: '50mb' }), wrap(async (req, res) => {
+  res.json(await media.transcribe(req.user.id, req.body, (req.headers['content-type'] || 'audio/webm').split(';')[0]));
+}));
+
+// ---------- schedules ----------
+api.get('/schedules', (req, res) => res.json({ tasks: scheduler.list(req.user.id).map((t) => ({ ...t, human: scheduler.describe(t.cron) })) }));
+api.post('/schedules', wrap((req, res) => res.json({ task: scheduler.create(req.user.id, { ...req.body, tz: req.body.tz || req.user.tz }) })));
+api.patch('/schedules/:id', wrap((req, res) => res.json({ task: scheduler.update(req.user.id, req.params.id, req.body) })));
+api.delete('/schedules/:id', (req, res) => { scheduler.remove(req.user.id, req.params.id); res.json({ ok: true }); });
+api.post('/schedules/:id/run', wrap((req, res) => { scheduler.fire(req.user.id, req.params.id); res.json({ ok: true }); }));
+
+// ---------- monitor / usage / sites ----------
+api.get('/monitor', wrap(async (req, res) => { if (!req.user.admin) throw auth.httpError(403, 'Только владелец'); res.json(await monitor.snapshot()); }));
+api.get('/usage', (req, res) => res.json(usage.report(req.user.id)));
+api.get('/sites', (req, res) => res.json({ sites: sites.list(req.user.id), domain: sites.baseDomain() }));
+api.delete('/sites/:name', wrap((req, res) => res.json({ msg: sites.unpublish(req.user.id, req.params.name) })));
+
+// ---------- share links + QR ----------
+api.post('/share', wrap((req, res) => {
+  const f = resolveFsPath(req.user, req.body.path);
+  const l = extras.shareLink(req.user.id, f, req.body.days || 7);
+  res.json({ ...l, url: publicUrl(req) + '/dl/' + l.token + '/' + encodeURIComponent(l.name) });
+}));
+api.get('/qr', wrap(async (req, res) => { res.type('image/svg+xml').send(await QRCode.toString(String(req.query.text || ''), { type: 'svg', margin: 1, color: { dark: '#000000', light: '#ffffff' } })); }));
+
+// ---------- invites & shared projects ----------
+api.post('/invites', wrap((req, res) => {
+  const project = req.body.project ? sanitizeProject(req.body.project) : null;
+  if (project && !fs.existsSync(path.join(userRoot(req.user), project))) throw auth.httpError(404, 'Нет такого проекта');
+  const code = auth.createInvite(req.user, project);
+  res.json({ code, link: publicUrl(req) + '/?invite=' + code });
+}));
+api.post('/invites/join', wrap((req, res) => { if (!auth.useInvite(String(req.body.code || '').trim(), req.user.id)) throw auth.httpError(404, 'Код не найден или уже использован'); res.json({ ok: true }); }));
+api.get('/shares', (req, res) => res.json({ mine: auth.sharesOf(req.user.id), withMe: auth.sharesFor(req.user.id) }));
+api.delete('/shares', wrap((req, res) => { auth.unshare(req.user.id, req.body.project, req.body.member); res.json({ ok: true }); }));
+
+// ---------- Ollama ----------
+api.get('/ollama', wrap(async (req, res) => res.json(await extras.ollamaStatus())));
+api.post('/ollama/install', wrap(async (req, res) => {
+  if (!req.user.admin) throw auth.httpError(403, 'Только владелец');
+  res.json({ ok: true });
+  extras.ollamaInstall((d) => broadcast(req.user.id, { t: 'ollama', text: d.toString() }))
+    .then(() => broadcast(req.user.id, { t: 'ollama', done: true, text: 'Ollama установлен ✓' }))
+    .catch((e) => broadcast(req.user.id, { t: 'ollama', done: true, error: e.message }));
+}));
+api.post('/ollama/pull', wrap(async (req, res) => {
+  const model = String(req.body.model || '').trim();
+  if (!model) throw auth.httpError(400, 'Укажите модель');
+  res.json({ ok: true });
+  let last = 0;
+  extras.ollamaPull(model, (j) => { const pct = j.total ? Math.floor(j.completed / j.total * 100) : null; if (Date.now() - last > 700) { last = Date.now(); broadcast(req.user.id, { t: 'ollama', model, status: j.status, pct }); } })
+    .then((m) => { store.setProvider(req.user.id, 'ollama', { ...(store.getProviders(req.user.id).ollama || {}), connectedAt: Date.now(), via: 'local' }); broadcast(req.user.id, { t: 'ollama', model, done: true, text: m }); broadcast(req.user.id, { t: 'providers_changed' }); })
+    .catch((e) => broadcast(req.user.id, { t: 'ollama', model, done: true, error: e.message }));
+}));
+api.post('/backup', wrap(async (req, res) => res.json({ msg: await extras.backup(req.user.id, req.user, gdrive, { includeProjects: req.body.projects !== false }) })));
+
+// ---------- virtual Android ----------
+api.get('/android', wrap(async (req, res) => res.json(await android.status())));
+api.post('/android/start', wrap(async (req, res) => {
+  if (!req.user.admin) throw auth.httpError(403, 'Только владелец');
+  res.json({ ok: true });
+  android.tool(req.user.id, 'android_start', {}, { onOutput: (t) => broadcast(req.user.id, { t: 'android_log', text: t }) })
+    .then((r) => broadcast(req.user.id, { t: 'android_log', done: true, text: r.content.split('\n')[0] }))
+    .catch((e) => broadcast(req.user.id, { t: 'android_log', done: true, error: e.message }));
+}));
+
 // ---------- secrets (.env) ----------
 api.get('/secrets', (req, res) => res.json({ secrets: secrets.list(req.user.id) }));
 api.put('/secrets/:name', wrap((req, res) => { secrets.set(req.user.id, req.params.name, req.body.value, req.body.desc); res.json({ ok: true }); }));
@@ -191,8 +294,16 @@ api.get('/projects', (req, res) => {
   const root = userRoot(req.user);
   fs.mkdirSync(root, { recursive: true });
   const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
-  res.json({ root, projects: dirs });
+  const shared = auth.sharesFor(req.user.id).map((s) => ({ name: s.project, owner: s.ownerName, path: path.join(cfg.WORKSPACES_DIR, s.ownerName, s.project) }));
+  res.json({ root, projects: dirs, shared });
 });
+// import a GitHub repo as a new project
+api.post('/projects/github', wrap(async (req, res) => {
+  const { repo } = extras.parseRepo(req.body.repo);
+  const name = sanitizeProject(req.body.project || repo);
+  const msg = await extras.ghClone(req.user.id, req.body.repo, path.join(userRoot(req.user), name), req.body.branch);
+  res.json({ ok: true, project: name, msg });
+}));
 
 // ---------- chats ----------
 function sanitizeProject(n) { return String(n || '').trim().replace(/[^\p{L}\p{N}_.-]+/gu, '_').replace(/^\.+/, '').slice(0, 64); }
@@ -208,9 +319,14 @@ api.post('/chats', wrap((req, res) => {
   providers.resolve(req.user.id, b.provider);
   const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
   const project = sanitizeProject(b.project) || 'chat-' + id;
+  let workspace = path.join(userRoot(req.user), project);
+  if (b.sharedPath) {
+    if (!sharedRoots(req.user).includes(b.sharedPath)) throw auth.httpError(403, 'Нет доступа к общему проекту');
+    workspace = b.sharedPath;
+  }
   const chat = {
     id, title: b.title || 'Новый чат', provider: b.provider, model: b.model,
-    workspace: path.join(userRoot(req.user), project), project,
+    workspace, project: b.sharedPath ? path.basename(b.sharedPath) : project, shared: !!b.sharedPath,
     phoneAccess: { full: !!(b.phoneAccess && b.phoneAccess.full), folders: (b.phoneAccess && b.phoneAccess.folders) || [] },
     serverAccess: b.serverAccess === 'full' && req.user.admin ? 'full' : 'project',
     serverDir: b.serverDir || '/root',
@@ -242,6 +358,7 @@ api.patch('/chats/:id', wrap((req, res) => {
 }));
 api.delete('/chats/:id', (req, res) => { agent.stopRun(req.user.id, req.params.id); store.deleteChat(req.user.id, req.params.id); broadcast(req.user.id, { t: 'chats_changed' }); res.json({ ok: true }); });
 api.post('/chats/:id/messages', wrap(async (req, res) => {
+  if (req.body.tz && req.user.tz !== req.body.tz) { req.user.tz = String(req.body.tz).slice(0, 60); store.saveDb(); }
   await agent.startRun(req.user, req.params.id, req.body.text, req.body.images || []);
   res.json({ ok: true });
 }));
@@ -294,6 +411,11 @@ api.delete('/fs', wrap((req, res) => {
 }));
 
 app.use('/api', api);
+const nm = (p) => path.join(cfg.ROOT, 'node_modules', p);
+app.use('/vendor/codemirror', express.static(nm('codemirror'), { maxAge: '7d' }));
+app.use('/vendor/xterm', express.static(nm('@xterm/xterm'), { maxAge: '7d' }));
+app.use('/vendor/xterm-fit', express.static(nm('@xterm/addon-fit'), { maxAge: '7d' }));
+app.use('/vendor/diff', express.static(nm('diff/dist'), { maxAge: '7d' }));
 app.use(express.static(path.join(cfg.ROOT, 'public'), { maxAge: 0, etag: true }));
 app.get('*', (req, res) => res.sendFile(path.join(cfg.ROOT, 'public', 'index.html')));
 
@@ -312,6 +434,10 @@ function broadcast(uid, msg) {
 function broadcastAll(msg) { for (const uid of sockets.keys()) broadcast(uid, msg); }
 
 agent.setBroadcast(broadcast);
+notify.setBroadcast(broadcast);
+android.setBroadcast(broadcast);
+scheduler.setRunner((t) => agent.runScheduled(t, extras, gdrive));
+monitor.onAlert((title, body) => { for (const u of store.db.users.filter((x) => x.admin)) notify.push(u.id, '🖥 ' + title, body); });
 browser.setBroadcast(broadcast);
 agent.setPhoneCaller((uid) => {
   const set = sockets.get(uid);
@@ -346,6 +472,21 @@ wss.on('connection', (ws, req) => {
       const f = on && browser.lastFrame(user.id);
       if (f) ws.send(JSON.stringify({ t: 'browser_frame', ...f }));
     } else if (m.t === 'browser_input') browser.input(user.id, m.ev || {});
+    else if (m.t === 'android_view') {
+      const on = !!m.on;
+      if (on !== !!ws.aviewing) { ws.aviewing = on; android.setViewers(user.id, on ? 1 : -1); }
+    } else if (m.t === 'android_input') android.input(m.ev || {}).catch(() => {});
+    else if (m.t === 'term_open' && user.admin) {
+      if (ws.term) try { ws.term.kill('SIGKILL'); } catch {}
+      const cols = Math.min(Math.max(parseInt(m.cols, 10) || 80, 20), 300), rows = Math.min(Math.max(parseInt(m.rows, 10) || 24, 5), 120);
+      const cwd = m.cwd && fs.existsSync(m.cwd) ? m.cwd : userRoot(user);
+      const p = require('child_process').spawn('script', ['-qfec', `stty cols ${cols} rows ${rows}; export TERM=xterm-256color; cd ${JSON.stringify(cwd)}; exec bash -l`, '/dev/null'], { env: { ...process.env, TERM: 'xterm-256color', KALA_SECRET: '' } });
+      ws.term = p;
+      const out = (d) => ws.readyState === 1 && ws.send(JSON.stringify({ t: 'term_out', data: d.toString('base64') }));
+      p.stdout.on('data', out); p.stderr.on('data', out);
+      p.on('close', () => { if (ws.term === p) { ws.term = null; ws.readyState === 1 && ws.send(JSON.stringify({ t: 'term_exit' })); } });
+    } else if (m.t === 'term_in' && ws.term) ws.term.stdin.write(Buffer.from(String(m.data || ''), 'base64'));
+    else if (m.t === 'term_close' && ws.term) { try { ws.term.kill('SIGKILL'); } catch {} ws.term = null; }
     else if (m.t === 'phone_response') {
       const p = pendingPhone.get(m.id);
       if (!p) return;
@@ -354,7 +495,7 @@ wss.on('connection', (ws, req) => {
       if (m.ok) p.resolve(m.result || {}); else p.reject(new Error(m.error || 'Ошибка на телефоне'));
     }
   });
-  ws.on('close', () => { if (ws.viewing) browser.setViewers(user.id, -1).catch(() => {}); const s = sockets.get(user.id); if (s) { s.delete(ws); if (!s.size) sockets.delete(user.id); } });
+  ws.on('close', () => { if (ws.viewing) browser.setViewers(user.id, -1).catch(() => {}); if (ws.aviewing) android.setViewers(user.id, -1); if (ws.term) try { ws.term.kill('SIGKILL'); } catch {} const s = sockets.get(user.id); if (s) { s.delete(ws); if (!s.size) sockets.delete(user.id); } });
 });
 
 server.requestTimeout = 0; // ask_user via MCP can wait for the user a long time

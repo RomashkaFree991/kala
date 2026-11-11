@@ -11,8 +11,13 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "codemirror": "^5.65.18",
+    "diff": "^5.2.0",
     "express": "^4.21.2",
     "playwright-core": "1.63.0",
+    "qrcode": "^1.5.4",
     "ws": "^8.18.0"
   }
 }
