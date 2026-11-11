@@ -9,6 +9,7 @@ const store = require('./store');
 const auth = require('./auth');
 const providers = require('./providers');
 const agent = require('./agent');
+const rfs = require('./rootfs');
 
 const app = express();
 app.set('trust proxy', true);
@@ -152,6 +153,8 @@ api.post('/chats', wrap((req, res) => {
     id, title: b.title || 'Новый чат', provider: b.provider, model: b.model,
     workspace: path.join(userRoot(req.user), project), project,
     phoneAccess: { full: !!(b.phoneAccess && b.phoneAccess.full), folders: (b.phoneAccess && b.phoneAccess.folders) || [] },
+    serverAccess: b.serverAccess === 'full' && req.user.admin ? 'full' : 'project',
+    serverDir: b.serverDir || '/root',
     messages: [], createdAt: Date.now(),
   };
   fs.mkdirSync(chat.workspace, { recursive: true });
@@ -169,6 +172,8 @@ api.patch('/chats/:id', wrap((req, res) => {
     if (b.provider !== chat.provider) chat.claudeSessionId = null;
     chat.provider = b.provider; chat.model = b.model;
   }
+  if (b.serverAccess) chat.serverAccess = b.serverAccess === 'full' && req.user.admin ? 'full' : 'project';
+  if (b.serverDir) chat.serverDir = String(b.serverDir);
   if (b.phoneAccess) chat.phoneAccess = { full: !!b.phoneAccess.full, folders: (b.phoneAccess.folders || []).map(String) };
   if (b.project) { chat.project = sanitizeProject(b.project); chat.workspace = path.join(userRoot(req.user), chat.project); fs.mkdirSync(chat.workspace, { recursive: true }); chat.claudeSessionId = null; }
   store.saveChat(req.user.id, chat);
@@ -191,39 +196,40 @@ api.post('/upload/image', raw, (req, res) => {
 });
 api.get('/fs/list', wrap((req, res) => {
   const dir = resolveFsPath(req.user, req.query.path);
-  const items = fs.readdirSync(dir, { withFileTypes: true }).map((d) => {
-    let st = null; try { st = fs.statSync(path.join(dir, d.name)); } catch {}
-    return { name: d.name, dir: d.isDirectory(), size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0 };
-  }).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+  const items = rfs.list(dir, false).map(({ name, dir: d, size, mtime }) => ({ name, dir: d, size, mtime }))
+    .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
   res.json({ path: dir, root: userRoot(req.user), items });
 }));
 api.get('/fs/read', wrap((req, res) => {
   const f = resolveFsPath(req.user, req.query.path);
-  const st = fs.statSync(f);
+  const st = rfs.stat(f);
   if (st.size > 2 * 1024 * 1024) throw auth.httpError(413, 'Файл слишком большой для просмотра, скачайте его');
-  res.json({ path: f, content: fs.readFileSync(f, 'utf8') });
+  res.json({ path: f, content: rfs.readFile(f).toString('utf8') });
 }));
 api.post('/fs/write', wrap((req, res) => {
   const f = resolveFsPath(req.user, req.body.path);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, String(req.body.content ?? ''));
+  rfs.writeFile(f, String(req.body.content ?? ''));
   res.json({ ok: true });
 }));
 api.get('/fs/download', wrap((req, res) => {
   const f = resolveFsPath(req.user, req.query.path);
-  res.download(f, path.basename(f));
+  try { fs.accessSync(f, fs.constants.R_OK); return res.download(f, path.basename(f)); } catch (e) { if (e.code === 'ENOENT') throw auth.httpError(404, 'Файл не найден'); }
+  // no permission for the kala user -> stream through sudo cat
+  res.attachment(path.basename(f));
+  const p = require('child_process').spawn('sudo', ['-n', 'cat', '--', f]);
+  p.stdout.pipe(res);
+  p.on('error', () => res.end());
 }));
 api.post('/fs/upload', raw, wrap((req, res) => {
   const f = resolveFsPath(req.user, req.query.path);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, req.body);
+  rfs.writeFile(f, req.body);
   res.json({ ok: true, path: f, size: req.body.length });
 }));
-api.post('/fs/mkdir', wrap((req, res) => { fs.mkdirSync(resolveFsPath(req.user, req.body.path), { recursive: true }); res.json({ ok: true }); }));
+api.post('/fs/mkdir', wrap((req, res) => { rfs.mkdir(resolveFsPath(req.user, req.body.path)); res.json({ ok: true }); }));
 api.delete('/fs', wrap((req, res) => {
   const f = resolveFsPath(req.user, req.query.path);
-  if (f === userRoot(req.user) || f === '/') throw auth.httpError(400, 'Нельзя удалить корень');
-  fs.rmSync(f, { recursive: true, force: true });
+  if (['/', '/root', '/home', '/etc', '/usr', '/var', '/bin', '/boot', '/lib', '/opt', userRoot(req.user)].includes(f)) throw auth.httpError(400, 'Нельзя удалить ' + f);
+  rfs.rm(f);
   res.json({ ok: true });
 }));
 

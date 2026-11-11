@@ -43,6 +43,27 @@ log "1/6 Базовые пакеты"
 FREE_MB="$(df -Pm / | awk 'NR==2{print $4}')"
 echo "Свободно на диске: ${FREE_MB} МБ"
 [ "${FREE_MB:-0}" -lt 6000 ] && warn "Мало места на диске (<6 ГБ). Android SDK + Godot требуют ~5 ГБ."
+# Find which folder apt can't write to ("No space left on device" while / has free space
+# usually means a full small /tmp or /var mount, or no free inodes).
+apt-get clean >/dev/null 2>&1 || true
+rm -f /var/cache/apt/*.bin 2>/dev/null || true
+SPACE_BAD=""
+for d in /tmp /var/tmp /var/cache/apt /var/lib/apt/lists /var/lib/dpkg /var/log; do
+  [ -d "$d" ] || continue
+  if ! dd if=/dev/zero of="$d/.kala-wtest" bs=1M count=2 >/dev/null 2>&1; then
+    SPACE_BAD="$SPACE_BAD $d"
+    warn "Не могу записать в $d: $(df -h "$d" | awk 'NR==2{print "раздел " $6 ", свободно " $4}') $(df -i "$d" | awk 'NR==2{print ", свободных inode " $4}')"
+  fi
+  rm -f "$d/.kala-wtest"
+done
+if echo "$SPACE_BAD" | grep -q "/tmp"; then
+  mkdir -p /var/lib/kala/tmp && chmod 1777 /var/lib/kala/tmp
+  export TMPDIR=/var/lib/kala/tmp
+  warn "/tmp переполнен — временные файлы перенесены в $TMPDIR. Почистить /tmp: sudo find /tmp -mindepth 1 -mtime +1 -delete"
+fi
+INODES_FREE="$(df -Pi / | awk 'NR==2{print $4}')"
+[ "${INODES_FREE:-1000000}" -lt 50000 ] 2>/dev/null && warn "На диске почти кончились inode (свободно $INODES_FREE). Обычно это миллионы мелких файлов: логи, кэш, сессии. Посмотреть: sudo du --inodes -x / 2>/dev/null | sort -n | tail -15"
+
 # finish interrupted installs / wait for unattended-upgrades
 for i in $(seq 1 60); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; [ $i = 1 ] && echo "Жду, пока освободится apt (идут автообновления)…"; sleep 5; done
 dpkg --configure -a >/dev/null 2>&1 || true

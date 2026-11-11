@@ -265,7 +265,7 @@
     const t = $('#ttl');
     if (!t) return;
     if (!S.chat) { t.innerHTML = '<b>Kala</b><span class="chip">нет чата</span>'; return; }
-    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">🧠 ${esc(S.chat.model)} ▾</span>`;
+    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">${S.chat.serverAccess === 'full' ? '🖥 VPS · ' : ''}🧠 ${esc(S.chat.model)} ▾</span>`;
     $('#mchip').onclick = () => pickModel(S.chat.provider, S.chat.model, async (p, m) => {
       await api('/chats/' + S.chat.id, { method: 'PATCH', body: { provider: p, model: m } });
       S.chat.provider = p; S.chat.model = m; renderHeader(); toast('Модель: ' + m);
@@ -291,9 +291,10 @@
   let rq = false;
   function scheduleRender() { if (rq) return; rq = true; requestAnimationFrame(() => { rq = false; renderMsgs(); }); }
 
-  const TOOL_ICONS = { bash: '💻', read_file: '📖', write_file: '📝', edit_file: '✏️', list_dir: '📂', delete_path: '🗑', move_path: '🔀', web_fetch: '🌐', web_search: '🔎', download_file: '⬇️', view_image: '🖼', send_file: '📦', phone_take_photo: '📷', phone_list_files: '📱', phone_read_file: '📱', phone_write_file: '📱', phone_to_server: '📲', server_to_phone: '📲', phone_delete: '📱', Bash: '💻', Read: '📖', Write: '📝', Edit: '✏️', MultiEdit: '✏️', Glob: '📂', Grep: '🔎', LS: '📂', WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Task: '🧩' };
+  const TOOL_ICONS = { install_packages: '🧰', bash: '💻', read_file: '📖', write_file: '📝', edit_file: '✏️', list_dir: '📂', delete_path: '🗑', move_path: '🔀', web_fetch: '🌐', web_search: '🔎', download_file: '⬇️', view_image: '🖼', send_file: '📦', phone_take_photo: '📷', phone_list_files: '📱', phone_read_file: '📱', phone_write_file: '📱', phone_to_server: '📲', server_to_phone: '📲', phone_delete: '📱', Bash: '💻', Read: '📖', Write: '📝', Edit: '✏️', MultiEdit: '✏️', Glob: '📂', Grep: '🔎', LS: '📂', WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Task: '🧩' };
   function toolSummary(tc) {
     const a = tc.args || {};
+    if (Array.isArray(a.packages)) return a.packages.join(' ');
     return a.command || a.file_path || a.path || a.url || a.query || a.pattern || a.phone_path || a.server_path || a.description || (a.from ? a.from + ' → ' + a.to : '') || JSON.stringify(a).slice(0, 120);
   }
 
@@ -305,7 +306,7 @@
     for (const m of S.chat.messages) if (m.role === 'tool') results[m.toolCallId] = m;
     let html = '';
     if (!S.chat.messages.length && !S.run.running) {
-      html = `<div class="empty"><div class="big">💬</div><p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK».</p></div>`;
+      html = `<div class="empty"><div class="big">💬</div>${S.chat.serverAccess === 'full' ? `<p>🖥 Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code></p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
     }
     for (const m of S.chat.messages) {
       if (m.role === 'user') {
@@ -485,6 +486,25 @@
     return () => ({ full: $('#pfull', el).checked, folders: [...el.querySelectorAll('[data-pf]')].filter((c) => c.checked).map((c) => c.dataset.pf) });
   }
 
+  function serverAccessHtml(c) {
+    const full = c && c.serverAccess === 'full';
+    if (!S.user || !S.user.admin) return '';
+    return `<div class="muted" style="margin-top:12px">Где работает ИИ</div>
+      <label class="sw"><input type="radio" name="sacc" value="project" ${full ? '' : 'checked'}> 📁 В папке проекта</label>
+      <label class="sw"><input type="radio" name="sacc" value="full" ${full ? 'checked' : ''}> 🖥 Весь сервер (VPS, root) — ИИ может всё: файлы, службы, nginx, пакеты</label>
+      <input class="field" id="sdir" placeholder="Стартовая папка на сервере" value="${esc((c && c.serverDir) || '/root')}" style="${full ? '' : 'display:none'}">`;
+  }
+  function bindServerAccess(el) {
+    const radios = el.querySelectorAll('[name=sacc]');
+    radios.forEach((r) => r.onchange = () => { const d = $('#sdir', el), f = el.querySelector('[name=sacc][value=full]'); if (d) d.style.display = f.checked ? '' : 'none'; });
+    return () => {
+      const r = el.querySelector('[name=sacc]:checked');
+      if (!r) return {};
+      if (r.value === 'full' && !(S.chat && S.chat.serverAccess === 'full') && !confirm('Дать ИИ полный root-доступ ко всему серверу?')) return {};
+      return { serverAccess: r.value, serverDir: ($('#sdir', el) || {}).value || '/root' };
+    };
+  }
+
   async function newChat() {
     let groups, projects;
     try { [groups, projects] = await Promise.all([getModels(), api('/projects')]); } catch (e) { return toast(e.message); }
@@ -495,6 +515,7 @@
     else { const g = groups.find((g) => g.models.length); if (g) sel = { p: g.provider, m: g.models[0].id }; }
     sheet(`<h3>Новый чат</h3>
       <div class="muted">Модель</div><button class="btn block" id="msel" style="justify-content:space-between"></button>
+      ${serverAccessHtml(null)}
       <div class="muted" style="margin-top:12px">Папка проекта на сервере</div>
       <input class="field" id="proj" list="projs" placeholder="Новая папка (например my-game) или выберите">
       <datalist id="projs">${projects.projects.map((p) => `<option value="${esc(p)}">`).join('')}</datalist>
@@ -507,10 +528,11 @@
       $('#msel', el).onclick = () => pickModel(sel && sel.p, sel && sel.m, (p, m) => { sel = { p, m }; drawSel(); });
       el.querySelectorAll('[data-pj]').forEach((b) => b.onclick = () => { $('#proj', el).value = b.dataset.pj; });
       const getPA = bindPhoneAccess(el);
+      const getSA = bindServerAccess(el);
       $('#create', el).onclick = async () => {
         if (!sel) return toast('Выберите модель');
         try {
-          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: $('#proj', el).value, phoneAccess: getPA() } });
+          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: $('#proj', el).value, phoneAccess: getPA(), ...getSA() } });
           localStorage.setItem('kala_last_model', JSON.stringify(sel));
           close(); await loadChats(); loadChat(r.chat.id);
           setTimeout(() => $('#inp') && $('#inp').focus(), 100);
@@ -524,6 +546,7 @@
     sheet(`<h3>Настройки чата</h3>
       <input class="field" id="ctitle" value="${esc(c.title)}" placeholder="Название">
       <div class="muted">Модель</div><button class="btn block" id="cm">🧠 ${esc(c.model)} ▾</button>
+      ${serverAccessHtml(c)}
       <div class="muted" style="margin-top:10px">Папка проекта</div>
       <div class="row"><input class="field grow" id="cproj" value="${esc(c.project || c.workspace.split('/').pop())}"><button class="btn small" id="cfiles">📁</button></div>
       <div class="muted" style="margin-top:10px">Доступ к памяти телефона</div>
@@ -531,6 +554,7 @@
       <button class="btn primary block" id="csave">Сохранить</button>
       <button class="btn danger block" id="cdel">Удалить чат</button>`, (el, close) => {
       const getPA = bindPhoneAccess(el);
+      const getSA = bindServerAccess(el);
       $('#cm', el).onclick = () => pickModel(c.provider, c.model, async (p, m) => {
         await api('/chats/' + c.id, { method: 'PATCH', body: { provider: p, model: m } });
         c.provider = p; c.model = m; $('#cm', el).textContent = '🧠 ' + m + ' ▾'; renderHeader();
@@ -538,7 +562,7 @@
       $('#cfiles', el).onclick = () => { close(); filesPage(c.workspace); };
       $('#csave', el).onclick = async () => {
         try {
-          const body = { title: $('#ctitle', el).value, phoneAccess: getPA() };
+          const body = { title: $('#ctitle', el).value, phoneAccess: getPA(), ...getSA() };
           const pj = $('#cproj', el).value.trim();
           if (pj && pj !== (c.project || c.workspace.split('/').pop())) body.project = pj;
           const r = await api('/chats/' + c.id, { method: 'PATCH', body });
@@ -625,7 +649,7 @@
   function filesPage(startPath) {
     let cur = startPath || S.root;
     page('Файлы на сервере', (body, close, extra) => {
-      extra.innerHTML = '<button class="icon" id="fup">⬆️</button><button class="icon" id="fmk">＋</button><input type="file" id="fupi" multiple hidden>';
+      extra.innerHTML = (S.user && S.user.admin ? '<button class="icon" id="froot" title="Весь сервер">🖥</button>' : '') + '<button class="icon" id="fup">⬆️</button><button class="icon" id="fmk">＋</button><input type="file" id="fupi" multiple hidden>';
       const draw = async () => {
         let r;
         try { r = await api('/fs/list?path=' + encodeURIComponent(cur)); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
@@ -655,6 +679,7 @@
         }
         if (!r.items.length) body.appendChild(h('<div class="muted" style="padding:20px;text-align:center">Пусто</div>'));
       };
+      if ($('#froot', extra)) $('#froot', extra).onclick = () => { cur = cur === '/' ? S.root : '/'; draw(); };
       $('#fup', extra).onclick = () => $('#fupi', extra).click();
       $('#fupi', extra).onchange = async (e) => {
         for (const f of e.target.files) {

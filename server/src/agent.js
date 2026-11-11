@@ -9,7 +9,7 @@ const store = require('./store');
 const providers = require('./providers');
 const llm = require('./llm');
 const tools = require('./tools');
-const { MAX_AGENT_STEPS, PORT } = require('./config');
+const { MAX_AGENT_STEPS, PORT, DATA_DIR } = require('./config');
 
 const runs = new Map(); // key uid:chatId -> run
 let broadcast = () => {};
@@ -36,14 +36,23 @@ function addMessage(uid, chat, msg) {
   return msg;
 }
 
+const isFull = (chat) => chat.serverAccess === 'full';
+const workDir = (chat) => (isFull(chat) ? (chat.serverDir || '/root') : chat.workspace);
+function ctxBase(chat) { return { cwd: workDir(chat), root: isFull(chat), logDir: chat.workspace }; }
+
 function systemPrompt(chat, user, phoneOnline) {
   const pa = chat.phoneAccess || {};
+  const mode = isFull(chat)
+    ? `РЕЖИМ: ПОЛНОЕ УПРАВЛЕНИЕ СЕРВЕРОМ (VPS). Все команды и файловые операции выполняются от root. Текущая папка: ${workDir(chat)}. Ты администратор этого сервера: можешь смотреть и менять любые файлы (/etc, /var, /home, /opt…), управлять службами (systemctl), nginx, docker, файрволом, ставить/удалять пакеты, распаковывать архивы, собирать проекты. Перед опасными действиями (удаление данных, перезагрузка, остановка чужих служб, изменение SSH) коротко предупреди пользователя и спроси подтверждение. Не останавливай службу kala и nginx-сайт kala — через них пользователь с тобой общается.
+Папка для проектов по умолчанию: ${chat.workspace}`
+    : `Папка проекта (cwd): ${chat.workspace}`;
   return `Ты — Kala, автономный ИИ-агент-разработчик. Ты работаешь на Linux-сервере пользователя (${os.hostname()}, ${os.type()} ${os.release()}) и можешь выполнять любые действия через инструменты.
-Папка проекта (cwd): ${chat.workspace}
+${mode}
 Пользователь: ${user.username}. Сегодня ${new Date().toISOString().slice(0, 10)}.
 
 Возможности:
-- bash с sudo без пароля: ставь пакеты (apt-get install -y, pip install, npm i -g), запускай сборки. На сервере могут быть установлены Android SDK ($ANDROID_HOME), Java, Gradle, Godot (команда godot, headless), Python, Node.js. Если чего-то нет — установи сам.
+- bash${isFull(chat) ? ' (от root)' : ' с sudo без пароля'}: запускай любые команды и сборки. На сервере могут быть Android SDK ($ANDROID_HOME), Java, Gradle, Godot (команда godot, headless), Python, Node.js.
+- install_packages — установка любых программ и библиотек (apt → pip → npm, сам чинит apt). Если чего-то не хватает для задачи — НЕ спрашивай, а сразу установи. Если пакета нет в репозиториях — найди через web_search официальный сайт/GitHub releases, скачай (download_file) и установи/распакуй сам (например в /opt или ~/.local/bin).
 - Файлы: read_file, write_file, edit_file, list_dir, delete_path, move_path.
 - Интернет: web_search, web_fetch, download_file.
 - view_image — посмотреть картинку; send_file — отдать файл пользователю (например собранный APK, он скачает на телефон).
@@ -94,7 +103,10 @@ function loadImageFn(uid) {
 }
 
 function toolEnv() {
-  const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive', PIP_BREAK_SYSTEM_PACKAGES: '1', CI: '1', TERM: 'dumb' };
+  // temp dir on the main disk: /tmp on some VPS is a tiny tmpfs that fills up
+  const tmp = path.join(DATA_DIR, 'tmp');
+  try { fs.mkdirSync(tmp, { recursive: true, mode: 0o1777 }); fs.chmodSync(tmp, 0o1777); } catch {}
+  const env = { ...process.env, DEBIAN_FRONTEND: 'noninteractive', PIP_BREAK_SYSTEM_PACKAGES: '1', CI: '1', TERM: 'dumb', TMPDIR: tmp };
   delete env.KALA_SECRET;
   return env;
 }
@@ -121,7 +133,7 @@ async function runApi(uid, user, chat, run) {
       }
       run.toolOutputs[tc.id] = '';
       const ctx = {
-        uid, chat, cwd: chat.workspace, env: toolEnv(), signal: run.abort.signal, phoneCall: phoneCaller(uid),
+        uid, chat, ...ctxBase(chat), env: toolEnv(), signal: run.abort.signal, phoneCall: phoneCaller(uid),
         onOutput: (s) => { run.toolOutputs[tc.id] += s; if (run.toolOutputs[tc.id].length > 20000) run.toolOutputs[tc.id] = run.toolOutputs[tc.id].slice(-10000); emit(uid, chat.id, { t: 'tool_output', toolCallId: tc.id, text: s }); },
       };
       const r = await tools.exec(ctx, tc.name, tc.args);
@@ -150,11 +162,11 @@ function runClaudeCli(uid, user, chat, run, prompt) {
   }
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', chat.model,
     '--dangerously-skip-permissions', '--mcp-config', mcpCfg,
-    '--append-system-prompt', systemPrompt(chat, user, !!phoneCaller(uid)) + '\nИнструменты телефона, view_image и send_file доступны через MCP-сервер "kala" (mcp__kala__*).'];
+    '--append-system-prompt', systemPrompt(chat, user, !!phoneCaller(uid)) + '\nИнструменты телефона, install_packages, view_image и send_file доступны через MCP-сервер "kala" (mcp__kala__*).' + (isFull(chat) ? '\nТы запущен как пользователь kala с sudo без пароля: для действий от root добавляй sudo.' : '')];
   if (chat.claudeSessionId) args.push('--resume', chat.claudeSessionId);
 
   return new Promise((resolve, reject) => {
-    const proc = spawn('claude', args, { cwd: chat.workspace, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const proc = spawn('claude', args, { cwd: isFull(chat) ? '/' : chat.workspace, env, stdio: ['pipe', 'pipe', 'pipe'] });
     proc.stdin.end(prompt);
     run.abort.signal.addEventListener('abort', () => { try { proc.kill('SIGINT'); setTimeout(() => proc.kill('SIGKILL'), 3000); } catch {} });
     let buf = '', errBuf = '', resultErr = null;
@@ -212,7 +224,7 @@ async function internalTool(token, name, args) {
   if (!it) throw new Error('bad token');
   const chat = store.getChat(it.uid, it.chatId);
   const run = runs.get(key(it.uid, it.chatId));
-  const ctx = { uid: it.uid, chat, cwd: chat.workspace, env: toolEnv(), signal: run && run.abort.signal, phoneCall: phoneCaller(it.uid) };
+  const ctx = { uid: it.uid, chat, ...ctxBase(chat), env: toolEnv(), signal: run && run.abort.signal, phoneCall: phoneCaller(it.uid) };
   const r = await tools.exec(ctx, name, args);
   if (run && (r.images || r.file)) run.cliExtras['mcp__kala__' + name] = { images: r.images, file: r.file };
   const load = loadImageFn(it.uid);

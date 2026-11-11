@@ -4,6 +4,8 @@ const S = (props, required = []) => ({ type: 'object', properties: props, requir
 const DEFS = [
   { name: 'bash', description: 'Выполнить команду bash на Linux-сервере (cwd = папка проекта). Есть sudo без пароля: можно apt-get install, pip install, npm, gradle, godot, git и т.д. Для долгих серверов/процессов используйте background=true.',
     parameters: S({ command: { type: 'string' }, timeout_sec: { type: 'number', description: 'по умолчанию 900, максимум 7200' }, background: { type: 'boolean', description: 'запустить в фоне, вернуть PID и путь к логу' } }, ['command']) },
+  { name: 'install_packages', description: 'Установить программы/библиотеки на сервер (от root). Сам пробует apt → pip → npm и чинит apt при ошибках. Используй, когда чего-то не хватает. Если пакет не найден — найди его через web_search и скачай вручную (download_file + bash).',
+    parameters: S({ packages: { type: 'array', items: { type: 'string' }, description: 'имена пакетов, например ["ffmpeg","python3-pip"] или ["requests","numpy"]' }, manager: { type: 'string', enum: ['auto', 'apt', 'pip', 'npm'], description: 'по умолчанию auto' } }, ['packages']) },
   { name: 'read_file', description: 'Прочитать текстовый файл. Путь относительный (от папки проекта) или абсолютный.',
     parameters: S({ path: { type: 'string' }, offset: { type: 'number', description: 'номер первой строки (с 1)' }, limit: { type: 'number', description: 'кол-во строк' } }, ['path']) },
   { name: 'write_file', description: 'Создать или полностью перезаписать файл (папки создаются автоматически).',

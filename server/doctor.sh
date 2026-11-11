@@ -16,6 +16,11 @@ echo "-- IP сервера: ${MYIP:-?}  DNS $D → ${DNSIP:-нет}"
 [ -d "/etc/letsencrypt/live/$D" ] && ok "сертификат есть: $(openssl x509 -enddate -noout -in /etc/letsencrypt/live/$D/fullchain.pem 2>/dev/null)" || bad "сертификата для $D нет"
 curl -fsS --max-time 10 "https://$D/api/health" >/dev/null 2>&1 && ok "https://$D/api/health работает снаружи" || bad "https://$D не открывается"
 curl -fsS --max-time 10 "http://$D/api/health" >/dev/null 2>&1 && ok "http://$D/api/health работает" || bad "http://$D не открывается"
+echo "-- диск и inode:"; df -h / /tmp /var 2>/dev/null | sed 's/^/   /'; df -i / /tmp 2>/dev/null | sed 's/^/   /'
+for d in /tmp /var/tmp /var/cache/apt /var/lib/apt/lists /var/lib/dpkg; do
+  dd if=/dev/zero of="$d/.kala-wtest" bs=1M count=2 >/dev/null 2>&1 && ok "запись в $d" || bad "НЕ могу писать в $d"; rm -f "$d/.kala-wtest"
+done
+command -v gpgv >/dev/null && ok "gpgv есть" || bad "gpgv отсутствует (apt не может проверять подписи): sudo apt-get install --reinstall gpgv"
 command -v ufw >/dev/null && echo "-- ufw: $(ufw status | head -1)"
 echo "-- последние логи kala:"; journalctl -u kala -n 15 --no-pager 2>/dev/null | sed 's/^/   /'
 echo "-- ошибки nginx:"; tail -n 5 /var/log/nginx/error.log 2>/dev/null | sed 's/^/   /'
