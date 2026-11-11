@@ -1,4 +1,4 @@
-package fun.skkapap.kala;
+package com.koala.ai;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ViewFlipper xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:autoStart="true" android:flipInterval="320" android:inAnimation="@anim/koala_in" android:outAnimation="@anim/koala_out">
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/koala_1" android:padding="2dp" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/koala_0" android:padding="2dp" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/koala_2" android:padding="2dp" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/koala_3" android:padding="2dp" />
+    <ImageView android:layout_width="match_parent" android:layout_height="match_parent" android:src="@drawable/koala_0" android:padding="2dp" />
+</ViewFlipper>

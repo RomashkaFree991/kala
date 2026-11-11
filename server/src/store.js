@@ -70,7 +70,7 @@ function listChats(uid) {
     .map((f) => readJson(path.join(chatsDir(uid), f), null))
     .filter(Boolean)
     .map((c) => ({
-      id: c.id, title: c.title, provider: c.provider, model: c.model, workspace: c.workspace,
+      id: c.id, title: c.title, provider: c.provider, model: c.model, workspace: c.workspace, parentId: c.parentId || null, teamId: c.teamId || null, serverAccess: c.serverAccess,
       createdAt: c.createdAt, updatedAt: c.updatedAt, messageCount: c.messages.length,
     }))
     .sort((a, b) => b.updatedAt - a.updatedAt);

@@ -109,7 +109,7 @@ ${mode}
 - Прошлые чаты: chats_list, chat_search, chat_read — полный текст любой прошлой сессии (все сообщения, действия, результаты). Если пользователь ссылается на прошлую работу («как вчера», «продолжи тот проект») — найди и прочитай нужный чат.
 - Скиллы и память: skill_install (скачать скилл по ссылке, например из github.com/anthropics/skills), skill_create (сохранить свой рецепт), memory_save (запомнить факт навсегда). Когда узнаёшь что-то важное о пользователе или его проектах — сохраняй в память.
 - Расписание: schedule_create (каждое утро проверять сайт, постить в канал, делать бэкап…), schedule_list/delete; notify_user — push на телефон.
-${chat.teamId && teams.get(user.id, chat.teamId) ? '- В ЭТОМ ЧАТЕ ПОДКЛЮЧЕНА КОМАНДА «' + teams.get(user.id, chat.teamId).name + '». Участники (вызывай их через agents_run по role — модель и инструкции подставятся сами):\n' + teams.roster(teams.get(user.id, chat.teamId)) + '\n  Дели работу так, чтобы агенты не правили одни и те же файлы; после их работы проверяй и собирай результат.\n' : ''}- Команда агентов: agents_run — несколько ИИ параллельно (напр. «программист» и «тестировщик»), можно с разными моделями.
+${chat.teamId && teams.get(user.id, chat.teamId) ? '- ВАЖНО: в этом чате включён режим команды — для любой задачи больше пары простых действий НЕ делай всё сам, а раздели работу между участниками и запусти их ПАРАЛЛЕЛЬНО одним вызовом agents_run, потом проверь и собери результат.\n- В ЭТОМ ЧАТЕ ПОДКЛЮЧЕНА КОМАНДА «' + teams.get(user.id, chat.teamId).name + '». Участники (вызывай их через agents_run по role — модель и инструкции подставятся сами):\n' + teams.roster(teams.get(user.id, chat.teamId)) + '\n  Дели работу так, чтобы агенты не правили одни и те же файлы; после их работы проверяй и собирай результат.\n' : ''}- Команда агентов: agents_run — несколько ИИ параллельно (напр. «программист» и «тестировщик»), можно с разными моделями.
 - Сайты: publish_site — публикация на <имя>.${require('./sites').baseDomain() || 'домен'} с HTTPS (папка со статикой или порт запущенного сервера).
 - server_status — нагрузка/память/диск; share_file — публичная ссылка + QR (например APK для другого телефона).
 - Медиа: generate_image (бесплатно через pollinations или OpenAI/Gemini/Replicate/fal), generate_video (Replicate/fal ключ). telegram_post — пост в канал через бота (картинка/видео/текст). Автопостинг = schedule_create + генерация + telegram_post (или TikTok через браузер: browser_upload).
@@ -312,6 +312,13 @@ ${rosterText}
     } catch (e) { entry.state = 'error'; entry.status = e.message; push(); return `### ${a.role}\nОшибка: ${e.message}`; }
   }));
   return 'Результаты агентов:\n\n' + results.join('\n\n');
+}
+
+// Chat in "parallel" team mode: every message goes to all team members at once
+async function runParallelTeam(uid, user, chat, run, text) {
+  const team = teams.get(uid, chat.teamId);
+  const res = await runAgents(user, chat, team.members.map((m) => ({ role: m.role, task: text, provider: m.provider, model: m.model, prompt: m.prompt, folder: m.folder })), run);
+  addMessage(uid, chat, { role: 'assistant', content: res, toolCalls: [], model: 'команда «' + team.name + '»' });
 }
 
 // Run a whole team on one task (from the Teams page)
@@ -525,7 +532,8 @@ async function startRun(user, chatId, text, images, opts = {}) {
         }
         run.newInput = false;
         let mark = chat.messages.length;
-        await runClaudeCli(uid, user, chat, run, prompt);
+        if (chat.teamId && chat.teamMode === 'parallel' && teams.get(uid, chat.teamId)) { await runParallelTeam(uid, user, chat, run, String(text || '')); }
+        else await runClaudeCli(uid, user, chat, run, prompt);
         // messages written while Claude Code was working -> continue the same session with them
         while (run.newInput && !run.abort.signal.aborted) {
           run.newInput = false;
@@ -534,7 +542,8 @@ async function startRun(user, chatId, text, images, opts = {}) {
           if (!fresh) break;
           await runClaudeCli(uid, user, chat, run, 'Пока ты работал, пользователь написал (учти это, продолжая задачу):\n' + fresh);
         }
-      } else await runApi(uid, user, chat, run);
+      } else if (chat.teamId && chat.teamMode === 'parallel' && teams.get(uid, chat.teamId)) await runParallelTeam(uid, user, chat, run, String(text || ''));
+      else await runApi(uid, user, chat, run);
     } catch (e) {
       if (!run.abort.signal.aborted) {
         error = e.message || String(e);
@@ -567,4 +576,11 @@ function stopRun(uid, chatId) {
 // While a run is active its chat object is the source of truth (settings edits must go there).
 function liveChat(uid, chatId) { const r = runs.get(key(uid, chatId)); return r ? r.chat : null; }
 
-module.exports = { runTeam, runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };
+// data for the phone widget
+function liveSummary(uid) {
+  const list = [];
+  for (const [k, r] of runs) if (k.startsWith(uid + ':')) list.push({ title: r.chat.title, model: r.chat.model, child: !!r.chat.parentId, status: r.status || '' });
+  return list;
+}
+
+module.exports = { liveSummary, runTeam, runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };

@@ -1,15 +1,15 @@
 plugins { id 'com.android.application' }
 
 android {
-    namespace 'fun.skkapap.kala'
+    namespace 'com.koala.ai'
     compileSdk 34
 
     defaultConfig {
-        applicationId 'fun.skkapap.kala'
+        applicationId 'com.koala.ai'
         minSdk 26
         targetSdk 34
-        versionCode 4
-        versionName '1.1.0'
+        versionCode 5
+        versionName '2.0.0'
         // Server opened by default on first launch (can be changed in the app)
         buildConfigField 'String', 'DEFAULT_SERVER', '"https://skkapap.fun"'
     }

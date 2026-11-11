@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/w_root"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center"
+    android:background="@drawable/widget_bg" android:padding="8dp">
+    <FrameLayout android:id="@+id/w_kbox" android:layout_width="52dp" android:layout_height="52dp" android:background="@drawable/koala_bg" android:padding="5dp" />
+    <TextView android:id="@+id/w_status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Kala" android:textColor="#9A9A9A" android:textSize="11sp" android:maxLines="1" />
+</LinearLayout>

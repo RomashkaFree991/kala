@@ -62,9 +62,33 @@ const CATALOG = [
 
 function catalogEntry(id) { return CATALOG.find((p) => p.id === id); }
 
+// ---- user's own API services (any number): ids "custom-xxxx" ----
+const PRESETS = [
+  { name: 'Together AI', baseUrl: 'https://api.together.xyz/v1', keyUrl: 'https://api.together.ai/settings/api-keys' },
+  { name: 'Fireworks', baseUrl: 'https://api.fireworks.ai/inference/v1', keyUrl: 'https://fireworks.ai/account/api-keys' },
+  { name: 'Cerebras', baseUrl: 'https://api.cerebras.ai/v1', keyUrl: 'https://cloud.cerebras.ai' },
+  { name: 'SambaNova', baseUrl: 'https://api.sambanova.ai/v1', keyUrl: 'https://cloud.sambanova.ai/apis' },
+  { name: 'Perplexity', baseUrl: 'https://api.perplexity.ai', keyUrl: 'https://www.perplexity.ai/settings/api', models: 'sonar,sonar-pro,sonar-reasoning' },
+  { name: 'Moonshot (Kimi)', baseUrl: 'https://api.moonshot.ai/v1', keyUrl: 'https://platform.moonshot.ai/console/api-keys' },
+  { name: 'Qwen (Alibaba DashScope)', baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', keyUrl: 'https://dashscope.console.aliyun.com/apiKey' },
+  { name: 'Zhipu GLM', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', keyUrl: 'https://open.bigmodel.cn/usercenter/apikeys', models: 'glm-4.6,glm-4.5,glm-4.5-air,glm-4-flash' },
+  { name: 'NVIDIA NIM', baseUrl: 'https://integrate.api.nvidia.com/v1', keyUrl: 'https://build.nvidia.com' },
+  { name: 'Hugging Face', baseUrl: 'https://router.huggingface.co/v1', keyUrl: 'https://huggingface.co/settings/tokens' },
+  { name: 'GitHub Models', baseUrl: 'https://models.github.ai/inference', keyUrl: 'https://github.com/settings/tokens', models: 'openai/gpt-4.1,openai/gpt-4.1-mini,deepseek/DeepSeek-R1,meta/Llama-4-Scout-17B-16E-Instruct' },
+  { name: 'Anthropic (второй ключ)', baseUrl: 'https://api.anthropic.com', keyUrl: 'https://console.anthropic.com/settings/keys', type: 'anthropic' },
+  { name: 'OpenAI (второй ключ)', baseUrl: 'https://api.openai.com/v1', keyUrl: 'https://platform.openai.com/api-keys' },
+  { name: 'LM Studio / vLLM / свой сервер', baseUrl: 'http://127.0.0.1:1234/v1', keyUrl: '' },
+];
+function customEntry(uid, id) {
+  const c = store.getProviders(uid)[id];
+  if (!c || !c.custom) return null;
+  return { id, name: c.name || id, type: c.type === 'anthropic' ? 'anthropic' : 'openai', auth: 'key+url', custom: true, desc: c.baseUrl };
+}
+function entryFor(uid, id) { return catalogEntry(id) || (String(id).startsWith('custom-') ? customEntry(uid, id) : null); }
+
 // Resolved provider = catalog + user's stored connection
 function resolve(uid, id) {
-  const cat = catalogEntry(id);
+  const cat = entryFor(uid, id);
   if (!cat) throw new Error('Неизвестный провайдер ' + id);
   const conn = store.getProviders(uid)[id];
   if (!conn) throw new Error('Провайдер «' + cat.name + '» не подключён');
@@ -77,6 +101,13 @@ function claudeCliAvailable() {
 
 async function listModels(p) {
   if (p.type === 'claude-cli') return p.staticModels.map((id) => ({ id, name: id }));
+  const manual = String(p.models || '').split(',').map((x) => x.trim()).filter(Boolean).map((id) => ({ id, name: id }));
+  if (manual.length && p.custom) {
+    try { const auto = await listModelsRemote(p); const ids = new Set(auto.map((m) => m.id)); return [...manual.filter((m) => !ids.has(m.id)), ...auto]; } catch { return manual; }
+  }
+  return listModelsRemote(p);
+}
+async function listModelsRemote(p) {
   if (p.type === 'anthropic') {
     const r = await fetch(p.baseUrl + '/v1/models?limit=100', {
       headers: { 'x-api-key': p.apiKey, 'anthropic-version': '2023-06-01' },
@@ -190,6 +221,6 @@ function claudeLoginFinish(uid, code) {
 }
 
 module.exports = {
-  CATALOG, catalogEntry, resolve, listModels, claudeCliAvailable,
+  PRESETS, entryFor, CATALOG, catalogEntry, resolve, listModels, claudeCliAvailable,
   openRouterStart, openRouterFinish, claudeLoginStart, claudeLoginFinish,
 };

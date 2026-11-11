@@ -1,4 +1,4 @@
-package fun.skkapap.kala;
+package com.koala.ai;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
@@ -156,7 +156,7 @@ public class MainActivity extends Activity {
         web.loadUrl(server + "/" + q);
     }
 
-    @Override protected void onResume() { super.onResume(); visible = true; }
+    @Override protected void onResume() { super.onResume(); visible = true; KalaWidget.fetchAsync(this); }
     @Override protected void onPause() { super.onPause(); visible = false; }
 
     @Override
@@ -391,11 +391,17 @@ public class MainActivity extends Activity {
             startOAuthCatcher(cbId);
         }
 
+        /** Remember the session for the widget (works even with background notifications off). */
+        @JavascriptInterface public void setToken(String token) {
+            if (token == null || token.isEmpty()) prefs.edit().remove("token").apply();
+            else prefs.edit().putString("token", token).apply();
+            KalaWidget.fetchAsync(MainActivity.this);
+        }
+
         /** Background notifications service (long-poll to the server). */
         @JavascriptInterface public void setBackground(boolean on, String server, String token) {
             SharedPreferences.Editor e = prefs.edit().putBoolean("bg", on);
             if (token != null && !token.isEmpty()) e.putString("token", token);
-            if (!on && (token == null || token.isEmpty())) e.remove("token");
             e.apply();
             runOnUiThread(() -> {
                 if (on) {

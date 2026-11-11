@@ -19,6 +19,11 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   function h(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
+  // koala face logo (white on black)
+  function koala(cls) {
+    return `<svg class="koala ${cls || ''}" viewBox="14 18 80 72" aria-hidden="true"><circle cx="32" cy="40" r="15" fill="currentColor"/><circle cx="76" cy="40" r="15" fill="currentColor"/><circle cx="32" cy="41" r="7.5" fill="var(--kin,#9a9a9a)"/><circle cx="76" cy="41" r="7.5" fill="var(--kin,#9a9a9a)"/><ellipse cx="54" cy="59" rx="25" ry="22" fill="currentColor"/><circle cx="44" cy="55" r="3" fill="var(--kbg,#000)"/><circle cx="64" cy="55" r="3" fill="var(--kbg,#000)"/><ellipse cx="54" cy="65" rx="7" ry="9" fill="var(--kbg,#000)"/></svg>`;
+  }
+
   // ---------------- helpers ----------------
   let toastT;
   function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('on'), 2600); }
@@ -217,7 +222,7 @@
     const app = $('#app');
     const draw = () => {
       app.innerHTML = `<div class="center"><div class="card">
-        <div class="logo"><span class="mark">${ic('spark')}</span>Kala</div>
+        <div class="logo"><span class="mark">${koala()}</span>Kala</div>
         <div class="muted">${mode === 'login' ? 'Вход на сервер ' + esc(location.host) : (st.hasUsers ? 'Регистрация по инвайт-коду' : 'Первый запуск: создайте аккаунт владельца')}</div>
         <input class="field" id="u" placeholder="Логин" autocomplete="username" autocapitalize="none">
         <input class="field" id="p" type="password" placeholder="Пароль" autocomplete="current-password">
@@ -243,6 +248,7 @@
   }
   function logout(silent) {
     if (A && A.setBackground) try { A.setBackground(false, '', ''); } catch {}
+    if (A && A.setToken) try { A.setToken(''); } catch {}
     if (!silent && S.token) api('/auth/logout', { body: {} }).catch(() => {});
     S.token = ''; localStorage.removeItem('kala_token');
     try { S.ws && S.ws.close(); } catch {}
@@ -276,6 +282,7 @@
     renderDrawer();
     renderComposer();
     connectWs();
+    if (A && A.setToken) { try { A.setToken(S.token); } catch {} }
     if (A && A.setBackground && localStorage.getItem('kala_bg') !== '0') { try { A.setBackground(true, location.origin, S.token); } catch {} }
     const qp = new URLSearchParams(location.search);
     if (qp.get('invite')) { api('/invites/join', { body: { code: qp.get('invite') } }).then(() => toast('Доступ к общему проекту получен')).catch(() => {}); history.replaceState(null, '', '/'); }
@@ -291,7 +298,7 @@
     const d = $('#drawer');
     if (!d) return;
     d.innerHTML = `
-      <div class="head"><div class="logo"><span class="mark">${ic('spark')}</span>Kala</div><div class="muted">${esc(S.user ? S.user.username : '')} · ${esc(location.host)}</div>
+      <div class="head"><div class="logo"><span class="mark">${koala()}</span>Kala</div><div class="muted">${esc(S.user ? S.user.username : '')} · ${esc(location.host)}</div>
         <button class="btn primary block" id="newchat">${ic('plus')} Новый чат</button></div>
       <div class="sect">Чаты</div>
       <div class="list" id="chatlist">${S.chats.length ? '' : '<div class="muted" style="padding:10px 12px">Чатов пока нет</div>'}</div>
@@ -307,6 +314,7 @@
       </div>`;
     const list = $('#chatlist');
     for (const c of S.chats) {
+      if (c.parentId && !(S.chat && S.chat.id === c.id)) continue; // agents' chats open from the agents panel
       const el = h(`<button class="item ${S.chat && S.chat.id === c.id ? 'sel' : ''}">${c.running ? '<span class="dot busy"></span>' : ic(c.serverAccess === 'full' ? 'server' : 'chat', 'sm')}<span class="t" style="${c.parentId ? 'padding-left:10px;opacity:.8' : ''}">${esc(c.title)}<small>${esc(c.model)} · ${esc(c.workspace.split('/').pop())} · ${timeAgo(c.updatedAt)}</small></span></button>`);
       el.onclick = () => { toggleDrawer(false); loadChat(c.id); };
       list.appendChild(el);
@@ -328,7 +336,7 @@
   function renderEmpty() {
     S.chat = null;
     renderHeader();
-    $('#msgs').innerHTML = `<div class="empty"><div class="big">${ic('spark', 'xl')}</div><h3>Kala — ИИ-агент на вашем сервере</h3>
+    $('#msgs').innerHTML = `<div class="empty"><div class="big koalabig">${koala()}</div><h3>Kala — ИИ-агент на вашем сервере</h3>
       <p class="muted">Подключите ИИ, создайте чат и опишите задачу — ИИ сам правит файлы, ставит пакеты, собирает APK и игры Godot, работает с телефоном и Google Диском.</p>
       <div class="row"><button class="btn" id="e1">${ic('plug', 'sm')} Подключения</button><button class="btn primary" id="e2">${ic('plus', 'sm')} Новый чат</button></div></div>`;
     $('#e1').onclick = providersPage; $('#e2').onclick = newChat;
@@ -338,7 +346,7 @@
     const t = $('#ttl');
     if (!t) return;
     if (!S.chat) { t.innerHTML = '<b>Kala</b><span class="chip">нет чата</span>'; return; }
-    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">${ic(S.chat.serverAccess === 'full' ? 'server' : 'cpu')}${S.chat.serverAccess === 'full' ? 'VPS · ' : ''}${esc(S.chat.model)}${ic('down')}</span>`;
+    t.innerHTML = `<b>${esc(S.chat.title)}</b><span class="chip" id="mchip">${ic(S.chat.serverAccess === 'full' ? 'server' : 'cpu')}${S.chat.serverAccess === 'full' ? 'VPS · ' : ''}${S.chat.teamId ? '👥 ' + (S.chat.teamMode === 'parallel' ? 'все сразу · ' : 'команда · ') : ''}${esc(S.chat.model)}${ic('down')}</span>`;
     $('#mchip').onclick = () => pickModel(S.chat.provider, S.chat.model, async (p, m) => {
       await api('/chats/' + S.chat.id, { method: 'PATCH', body: { provider: p, model: m } });
       S.chat.provider = p; S.chat.model = m; renderHeader(); toast('Модель: ' + m);
@@ -770,6 +778,8 @@
     sheet(`<h3>Настройки чата</h3>
       <input class="field" id="ctitle" value="${esc(c.title)}" placeholder="Название">
       <div class="muted">Модель</div><button class="btn block" id="cm">${ic('cpu', 'sm')} ${esc(c.model)} ${ic('down', 'sm')}</button>
+      <div class="label">Несколько ИИ в этом чате</div>
+      <div id="cteam"><div class="muted"><span class="spin"></span></div></div>
       ${maxAccessHtml()}
       ${serverAccessHtml(c)}
       <div class="muted" style="margin-top:10px">Папка проекта</div>
@@ -781,6 +791,20 @@
       const getPA = bindPhoneAccess(el);
       const getSA = bindServerAccess(el);
       bindMaxAccess(el);
+      let teamId = c.teamId || null, teamMode = c.teamMode || 'coordinator';
+      const drawTeam = async () => {
+        let d = { teams: [] }; try { d = await api('/teams'); } catch {}
+        const box = $('#cteam', el);
+        box.innerHTML = `<select class="field" id="ctsel"><option value="">— только основная модель —</option>${d.teams.map((t) => `<option value="${t.id}" ${t.id === teamId ? 'selected' : ''}>👥 ${esc(t.name)}: ${t.members.map((m) => esc(m.model)).join(', ')}</option>`).join('')}</select>
+          <div id="ctmode" style="${teamId ? '' : 'display:none'}">
+            <label class="opt"><input type="radio" name="ctm" value="coordinator" ${teamMode !== 'parallel' ? 'checked' : ''}><span class="oi">${ic('cpu', 'sm')}</span><span><b>Основная модель делит работу</b><small>Раздаёт части задачи участникам, они работают одновременно, потом проверяет и собирает</small></span></label>
+            <label class="opt"><input type="radio" name="ctm" value="parallel" ${teamMode === 'parallel' ? 'checked' : ''}><span class="oi">${ic('users', 'sm')}</span><span><b>Все ИИ сразу на каждый промпт</b><small>Каждое сообщение получают все участники, каждый делает свою часть по роли</small></span></label></div>
+          <button class="btn block" id="cquick">${ic('plus', 'sm')} Быстро: выбрать 2–5 ИИ для этого чата</button>`;
+        $('#ctsel', box).onchange = (e) => { teamId = e.target.value || null; $('#ctmode', box).style.display = teamId ? '' : 'none'; };
+        box.querySelectorAll('[name=ctm]').forEach((x) => x.onchange = () => { teamMode = x.value; });
+        $('#cquick', box).onclick = () => quickTeam(c, async (t) => { teamId = t.id; await drawTeam(); });
+      };
+      drawTeam();
       $('#cm', el).onclick = () => pickModel(c.provider, c.model, async (p, m) => {
         await api('/chats/' + c.id, { method: 'PATCH', body: { provider: p, model: m } });
         c.provider = p; c.model = m; $('#cm', el).innerHTML = ic('cpu', 'sm') + ' ' + esc(m) + ' ' + ic('down', 'sm'); renderHeader();
@@ -788,7 +812,7 @@
       $('#cfiles', el).onclick = () => { close(); filesPage(c.workspace); };
       $('#csave', el).onclick = async () => {
         try {
-          const body = { title: $('#ctitle', el).value, phoneAccess: getPA(), ...getSA() };
+          const body = { title: $('#ctitle', el).value, phoneAccess: getPA(), ...getSA(), teamId, teamMode };
           const pj = $('#cproj', el).value.trim();
           if (pj && pj !== (c.project || c.workspace.split('/').pop())) body.project = pj;
           const r = await api('/chats/' + c.id, { method: 'PATCH', body });
@@ -814,6 +838,8 @@
     try { d = await api('/providers'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
     body.innerHTML = '<div class="label" style="margin-top:0">Файлы</div>';
     body.appendChild(await gdriveCard());
+    body.appendChild(h('<div class="label">Свои API-сервисы</div>'));
+    body.appendChild(customApisCard(d));
     body.appendChild(h('<div class="label">Модели ИИ</div>'));
     body.appendChild(h('<p class="muted" style="margin:0 0 10px">Подключите один или несколько ИИ — их модели появятся при создании чата.</p>'));
     for (const p of d.providers) {
@@ -869,6 +895,47 @@
       body.appendChild(el);
     }
   }
+  function customApisCard(d) {
+    const el = h(`<div class="prov"><h4><span class="pi">${ic('plug', 'sm')}</span>Мои API (${d.custom.length})</h4>
+      <p>Добавляйте сколько угодно сервисов: Together, Groq, Kimi, Qwen, GLM, NVIDIA, Hugging Face, второй ключ OpenAI/Anthropic, свой сервер… Любой OpenAI- или Anthropic-совместимый.</p>
+      <div id="cl"></div><button class="btn primary block" id="cadd">${ic('plus', 'sm')} Добавить API</button></div>`);
+    const list = $('#cl', el);
+    for (const c of d.custom) {
+      const row = h(`<div class="fsrow" style="cursor:default"><span class="fi">${ic('cpu')}</span><span class="n"><b>${esc(c.name)}</b><small class="muted" style="display:block">${esc(c.baseUrl)} ${esc(c.keyHint)}</small></span><button class="icon" data-e>${ic('pencil', 'sm')}</button><button class="icon" data-d>${ic('trash', 'sm')}</button></div>`);
+      $('[data-e]', row).onclick = () => customApiSheet(d.presets, c);
+      $('[data-d]', row).onclick = async () => { if (confirm('Удалить ' + c.name + '?')) { await api('/providers/' + c.id, { method: 'DELETE' }); S.models = null; renderProviders(); } };
+      list.appendChild(row);
+    }
+    $('#cadd', el).onclick = () => customApiSheet(d.presets, null);
+    return el;
+  }
+  function customApiSheet(presets, c) {
+    c = c || { name: '', baseUrl: '', type: 'openai', models: '' };
+    sheet(`<h3>${c.id ? 'Изменить API' : 'Новый API'}</h3>
+      ${c.id ? '' : `<div class="muted">Быстрый выбор</div><div class="row wrap" style="margin:6px 0">${presets.map((p, i) => `<button class="btn small" data-p="${i}">${esc(p.name)}</button>`).join('')}</div>`}
+      <input class="field" id="cname" placeholder="Название" value="${esc(c.name)}">
+      <input class="field" id="curl" placeholder="Base URL (https://…/v1)" value="${esc(c.baseUrl)}" autocapitalize="none">
+      <div class="row"><input class="field grow" id="ckey" type="password" placeholder="${c.id ? 'API-ключ (оставьте пустым — не менять)' : 'API-ключ'}" autocomplete="off"><button class="btn small" id="cget" style="display:none">${ic('key', 'sm')} Получить</button></div>
+      <select class="field" id="ctype"><option value="openai" ${c.type !== 'anthropic' ? 'selected' : ''}>Формат OpenAI (почти все сервисы)</option><option value="anthropic" ${c.type === 'anthropic' ? 'selected' : ''}>Формат Anthropic</option></select>
+      <input class="field" id="cmodels" placeholder="Модели через запятую (если сервис не отдаёт список)" value="${esc(c.models)}" autocapitalize="none">
+      <button class="btn primary block" id="csave">Подключить</button>`, (el, close) => {
+      let keyUrl = '';
+      el.querySelectorAll('[data-p]').forEach((b) => b.onclick = () => {
+        const p = presets[+b.dataset.p];
+        $('#cname', el).value = p.name; $('#curl', el).value = p.baseUrl; $('#ctype', el).value = p.type || 'openai'; $('#cmodels', el).value = p.models || '';
+        keyUrl = p.keyUrl; $('#cget', el).style.display = keyUrl ? '' : 'none';
+      });
+      $('#cget', el).onclick = () => keyUrl && openExternal(keyUrl);
+      $('#csave', el).onclick = async (e) => {
+        e.target.disabled = true; e.target.textContent = 'Проверяю…';
+        try {
+          const r2 = await api('/custom-providers', { body: { id: c.id, name: $('#cname', el).value, baseUrl: $('#curl', el).value, apiKey: $('#ckey', el).value, type: $('#ctype', el).value, models: $('#cmodels', el).value } });
+          toast(`Подключено: ${r2.models} моделей` + (r2.warning ? ' (список вручную)' : '')); S.models = null; close(); renderProviders();
+        } catch (err) { toast(err.message); e.target.disabled = false; e.target.textContent = 'Подключить'; }
+      };
+    });
+  }
+
   async function gdriveCard() {
     let g;
     try { g = await api('/gdrive'); } catch (e) { return h(`<div class="prov"><div class="err">${esc(e.message)}</div></div>`); }
@@ -1243,6 +1310,35 @@
       draw();
     });
   }
+  // pick several models (any services) -> team attached to this chat
+  function quickTeam(chat, done) {
+    const ROLES = ['Основной код', 'Интерфейс и дизайн', 'Тесты и сборка', 'Проверка и исправление ошибок', 'Документация и деплой'];
+    const members = [];
+    page('ИИ для этого чата', (body, close) => {
+      const draw = () => {
+        body.innerHTML = `<p class="muted" style="margin-top:0">Добавьте 2–5 моделей из любых подключённых сервисов. Каждому дайте свою роль — они будут работать одновременно и не мешать друг другу${''}.</p>
+          <div id="qm"></div><button class="btn block" id="qadd">${ic('plus', 'sm')} Добавить ИИ</button>
+          <label class="sw"><input type="checkbox" id="qown" checked> Каждому отдельная подпапка (точно не испортят файлы друг друга)</label>
+          <button class="btn primary block" id="qsave" ${members.length < 2 ? 'disabled' : ''}>Подключить к чату (${members.length})</button>`;
+        members.forEach((m, i) => {
+          const el = h(`<div class="mcard"><div class="row"><b class="grow">${esc(m.model)} <span class="muted">${esc(m.pname || m.provider)}</span></b><button class="icon" data-x>${ic('trash', 'sm')}</button></div><input class="field" value="${esc(m.role)}" placeholder="Роль"></div>`);
+          $('input', el).oninput = (e) => { m.role = e.target.value; };
+          $('[data-x]', el).onclick = () => { members.splice(i, 1); draw(); };
+          $('#qm', body).appendChild(el);
+        });
+        $('#qadd', body).onclick = () => pickModel(null, null, (p, md) => { const g = (S.models || []).find((x) => x.provider === p); members.push({ provider: p, model: md, pname: g ? g.name : p, role: ROLES[members.length] || 'Помощник ' + (members.length + 1) }); draw(); });
+        $('#qsave', body).onclick = async () => {
+          try {
+            const own = $('#qown', body).checked;
+            const r2 = await api('/teams', { body: { name: 'Чат: ' + chat.title.slice(0, 30), members: members.map((m) => ({ role: m.role, provider: m.provider, model: m.model, prompt: '', folder: own ? 'own' : 'shared' })), coordinator: { provider: chat.provider, model: chat.model } } });
+            close(); toast('Команда создана — нажмите «Сохранить»'); done(r2.team);
+          } catch (e) { toast(e.message); }
+        };
+      };
+      draw();
+    });
+  }
+
   function teamRunSheet(t) {
     sheet(`<h3>${ic('users')} ${esc(t.name)}: задача</h3>
       <textarea class="field" id="ttask" rows="5" placeholder="Например: сделай Telegram-бота-магазин с админкой, тестами и собери Docker-образ"></textarea>

@@ -1,12 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="horizontal" android:gravity="center_vertical"
-    android:background="@drawable/widget_bg" android:padding="12dp">
-    <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Kala" android:textColor="#FFFFFF" android:textSize="16sp" android:textStyle="bold" />
-        <TextView android:id="@+id/w_status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Нажмите, чтобы дать задачу" android:textColor="#9A9A9A" android:textSize="12sp" android:maxLines="2" />
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/w_root"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="horizontal" android:gravity="center_vertical"
+    android:background="@drawable/widget_bg" android:padding="10dp">
+    <FrameLayout android:id="@+id/w_kbox" android:layout_width="50dp" android:layout_height="50dp" android:background="@drawable/koala_bg" android:padding="5dp" />
+    <LinearLayout android:id="@+id/w_body" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical" android:layout_marginStart="10dp">
+        <TextView android:id="@+id/w_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Kala" android:textColor="#FFFFFF" android:textSize="15sp" android:textStyle="bold" android:maxLines="1" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+            <ImageView android:layout_width="13dp" android:layout_height="13dp" android:src="@drawable/ic_w_ai" android:alpha="0.7" />
+            <TextView android:id="@+id/w_status" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:text="ИИ свободен" android:textColor="#C8C8C8" android:textSize="12sp" android:maxLines="1" android:ellipsize="end" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+            <ImageView android:layout_width="13dp" android:layout_height="13dp" android:src="@drawable/ic_w_agents" android:alpha="0.7" />
+            <TextView android:id="@+id/w_line2" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="4dp" android:text="" android:textColor="#9A9A9A" android:textSize="11sp" android:maxLines="1" android:ellipsize="end" />
+        </LinearLayout>
     </LinearLayout>
-    <TextView android:id="@+id/w_voice" android:layout_width="44dp" android:layout_height="44dp" android:gravity="center" android:text="🎤" android:textSize="18sp" android:background="@drawable/widget_btn2" android:layout_marginEnd="8dp" />
-    <TextView android:id="@+id/w_task" android:layout_width="wrap_content" android:layout_height="44dp" android:gravity="center" android:paddingStart="16dp" android:paddingEnd="16dp" android:text="Задача" android:textColor="#0A0A0A" android:textStyle="bold" android:textSize="14sp" android:background="@drawable/widget_btn" />
+    <ImageView android:id="@+id/w_voice" android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_w_mic" android:padding="10dp" android:background="@drawable/widget_btn2" android:layout_marginStart="6dp" />
+    <ImageView android:id="@+id/w_task" android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/ic_w_chat" android:padding="10dp" android:background="@drawable/widget_btn" android:layout_marginStart="6dp" />
 </LinearLayout>

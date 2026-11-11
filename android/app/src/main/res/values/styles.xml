@@ -8,5 +8,5 @@
     </style>
     <color name="bg">#0F1115</color>
     <color name="bar">#171A21</color>
-    <color name="icon_bg">#1B2140</color>
+    <color name="icon_bg">#000000</color>
 </resources>

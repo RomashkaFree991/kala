@@ -21,6 +21,7 @@ const media = require('./media');
 const extras = require('./extras');
 const android = require('./android');
 const history = require('./history');
+const widgets = require('./widgets');
 const { DATA_DIR } = require('./config');
 
 // ---------- services (systemd) ----------
@@ -432,6 +433,14 @@ async function exec(ctx, name, args) {
         const r = await android.tool(ctx.uid, name, args, ctx);
         return { ...r, content: clip(r.content) };
       }
+      case 'widget_set': {
+        const pnl = widgets.set(ctx.uid, args);
+        if (pnl.command) await widgets.refresh(ctx.uid, pnl);
+        const fresh = widgets.list(ctx.uid).find((x) => x.id === pnl.id);
+        return { content: `Панель «${fresh.title}» (id=${fresh.id}) готова${fresh.command ? ', обновляется каждые ' + fresh.every + ' мин' : ''}. Сейчас:\n` + (fresh.lines || []).map((l) => `${l.icon || ''} ${l.label}: ${l.value}`).join('\n') + '\nПользователь: добавьте виджет Kala на главный экран и нажмите ⇄, чтобы переключиться на эту панель (обновится в течение нескольких минут).' };
+      }
+      case 'widget_list': { const l = widgets.list(ctx.uid); return { content: l.length ? l.map((x) => `${x.id}: «${x.title}» ${x.command ? '(команда, каждые ' + x.every + ' мин)' : ''}`).join('\n') : 'Панелей нет' }; }
+      case 'widget_delete': widgets.remove(ctx.uid, args.id); return { content: 'Панель удалена' };
       case 'chats_list': {
         const q = String(args.query || '').toLowerCase();
         const l = store.listChats(ctx.uid).filter((c) => !q || (c.title + ' ' + c.workspace + ' ' + c.model).toLowerCase().includes(q)).slice(0, Math.min(args.limit || 60, 300));

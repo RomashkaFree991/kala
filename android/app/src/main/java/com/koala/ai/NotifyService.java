@@ -1,4 +1,4 @@
-package fun.skkapap.kala;
+package com.koala.ai;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -65,7 +65,7 @@ public class NotifyService extends Service {
         super.onCreate();
         channels(this);
         Notification.Builder b = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CH_SVC) : new Notification.Builder(this);
-        Notification n = b.setSmallIcon(R.drawable.ic_notify).setContentTitle("Kala на связи")
+        Notification n = b.setSmallIcon(R.drawable.ic_notify).setContentTitle("Kala 🐨 на связи")
             .setContentText("Пришлю уведомление, когда ИИ закончит или будет ждать ответа")
             .setContentIntent(openApp(this, null, 1, false)).setOngoing(true).build();
         if (Build.VERSION.SDK_INT >= 34) startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
@@ -105,11 +105,12 @@ public class NotifyService extends Service {
             String server = p.getString("server", ""), token = p.getString("token", "");
             if (server.isEmpty() || token.isEmpty()) { stopSelf(); return; }
             try {
-                if (System.currentTimeMillis() - lastWidget > 5 * 60000) {
+                boolean busy = p.getString("widget_json", "").contains("\"running\":1") || p.getString("widget_json", "").matches(".*\"(running|agents)\":[1-9].*");
+                if (System.currentTimeMillis() - lastWidget > (busy ? 45000 : 5 * 60000)) {
                     lastWidget = System.currentTimeMillis();
                     try { KalaWidget.updateAll(this, new JSONObject(get(server + "/api/widget", token, 15000))); } catch (Exception ignored) { }
                 }
-                JSONObject r = new JSONObject(get(server + "/api/notify/poll?since=" + since + "&wait=50", token, 70000));
+                JSONObject r = new JSONObject(get(server + "/api/notify/poll?since=" + since + "&wait=" + (busy ? 40 : 50), token, 70000));
                 long last = r.optLong("last", since);
                 if (since != 0) {
                     JSONArray items = r.optJSONArray("items");

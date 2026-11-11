@@ -107,8 +107,23 @@ api.get('/providers', (req, res) => {
       connected: !!conns[p.id], via: conns[p.id] && conns[p.id].via, baseUrl: (conns[p.id] && conns[p.id].baseUrl) || p.baseUrl || '',
       keyHint: conns[p.id] && conns[p.id].secret ? '…' + conns[p.id].secret.slice(-4) : '',
     })),
+    custom: Object.entries(conns).filter(([id, c]) => c.custom).map(([id, c]) => ({ id, name: c.name, type: c.type || 'openai', baseUrl: c.baseUrl, models: c.models || '', keyHint: c.secret ? '…' + c.secret.slice(-4) : '' })),
+    presets: providers.PRESETS,
   });
 });
+// add / edit one of the user's own API services
+api.post('/custom-providers', wrap(async (req, res) => {
+  const b = req.body || {};
+  const id = b.id && /^custom-[a-z0-9]+$/.test(b.id) ? b.id : 'custom-' + crypto.randomBytes(4).toString('hex');
+  const old = store.getProviders(req.user.id)[id];
+  const baseUrl = String(b.baseUrl || '').trim().replace(/\/$/, '');
+  if (!/^https?:\/\//.test(baseUrl)) throw auth.httpError(400, 'Укажите Base URL (https://…)');
+  const data = { custom: true, name: String(b.name || 'Мой API').slice(0, 60), type: b.type === 'anthropic' ? 'anthropic' : 'openai', baseUrl, models: String(b.models || '').trim(),
+    secret: String(b.apiKey || '').trim() || (old && old.secret) || '', connectedAt: Date.now(), via: 'key' };
+  store.setProvider(req.user.id, id, data);
+  try { const m = await modelsFor(req.user.id, id, true); res.json({ ok: true, id, models: m.length }); }
+  catch (e) { if (!data.models) { if (old) store.setProvider(req.user.id, id, old); else store.setProvider(req.user.id, id, null); throw auth.httpError(400, 'Проверка не прошла: ' + e.message + '. Если у сервиса нет списка моделей — впишите модели вручную через запятую.'); } res.json({ ok: true, id, models: data.models.split(',').length, warning: e.message }); }
+}));
 
 const modelCache = new Map();
 async function modelsFor(uid, id, fresh) {
@@ -155,14 +170,24 @@ api.get('/diff/:id', wrap((req, res) => res.json(history.loadDiff(req.user.id, r
 
 // ---------- notifications (long-poll for the Android background service) ----------
 api.get('/notify/poll', wrap(async (req, res) => res.json(await notify.poll(req.user.id, Number(req.query.since) || 0, Math.min(Number(req.query.wait) || 50, 55) * 1000))));
-api.get('/widget', (req, res) => {
-  const chats = store.listChats(req.user.id);
-  const running = chats.filter((c) => agent.runState(req.user.id, c.id).running).length;
-  require('child_process').execFile('systemctl', ['list-units', '--type=service', '--no-legend', '--plain', 'kala-*'], { timeout: 4000 }, (e, out) => {
-    const svcs = e ? [] : out.trim().split('\n').filter(Boolean).map((l) => l.trim().split(/\s+/));
-    res.json({ running, bots: svcs.length, botsUp: svcs.filter((x) => x[2] === 'active').length, last: chats[0] ? chats[0].title : '' });
+api.get('/widget', wrap(async (req, res) => {
+  const live = agent.liveSummary(req.user.id);
+  const main = live.filter((x) => !x.child), agents = live.filter((x) => x.child);
+  const chats = store.listChats(req.user.id).filter((c) => !c.parentId);
+  const svcs = await new Promise((resolve) => require('child_process').execFile('systemctl', ['list-units', '--type=service', '--no-legend', '--plain', 'kala-*'], { timeout: 4000 }, (e, out) => resolve(e ? [] : out.trim().split('\n').filter(Boolean).map((l) => l.trim().split(/\s+/)).filter((x) => x[0] !== 'kala.service'))));
+  const u = usage.report(req.user.id), today = new Date().toISOString().slice(0, 10);
+  const cost = Object.values(u.days[today] || {}).reduce((a, v) => a + (v.cost || 0), 0);
+  let mon = null; try { mon = req.user.admin ? (await monitor.snapshot()).now : null; } catch {}
+  res.json({
+    running: main.length, agents: agents.length,
+    models: [...new Set(live.map((x) => x.model))].slice(0, 4),
+    status: main[0] ? main[0].status : '', task: main[0] ? main[0].title : '',
+    bots: svcs.length, botsUp: svcs.filter((x) => x[2] === 'active').length,
+    cost: Math.round(cost * 1000) / 1000, cpu: mon ? mon.cpu : null, mem: mon ? mon.mem : null, disk: mon ? mon.disk : null,
+    last: chats[0] ? chats[0].title : '', lastId: chats[0] ? chats[0].id : '',
+    panels: require('./widgets').list(req.user.id).map((p) => ({ id: p.id, title: p.title, lines: p.lines || [] })),
   });
-});
+}));
 
 // ---------- voice ----------
 api.post('/transcribe', express.raw({ type: () => true, limit: '50mb' }), wrap(async (req, res) => {
@@ -290,12 +315,13 @@ api.get('/models', wrap(async (req, res) => {
   const conns = store.getProviders(req.user.id);
   const out = [];
   await Promise.all(Object.keys(conns).map(async (id) => {
-    const cat = providers.catalogEntry(id);
+    const cat = providers.entryFor(req.user.id, id);
     if (!cat) return;
     try { out.push({ provider: id, name: cat.name, models: await modelsFor(req.user.id, id) }); }
     catch (e) { out.push({ provider: id, name: cat.name, models: [], error: e.message }); }
   }));
-  out.sort((a, b) => providers.CATALOG.findIndex((p) => p.id === a.provider) - providers.CATALOG.findIndex((p) => p.id === b.provider));
+  const ord = (id) => { const i = providers.CATALOG.findIndex((p) => p.id === id); return i < 0 ? 999 : i; };
+  out.sort((a, b) => ord(a.provider) - ord(b.provider) || a.name.localeCompare(b.name));
   res.json({ groups: out });
 }));
 
@@ -340,7 +366,7 @@ api.post('/chats', wrap((req, res) => {
     phoneAccess: { full: !!(b.phoneAccess && b.phoneAccess.full), folders: (b.phoneAccess && b.phoneAccess.folders) || [] },
     serverAccess: b.serverAccess === 'full' && req.user.admin ? 'full' : 'project',
     serverDir: b.serverDir || '/root',
-    teamId: b.teamId || null,
+    teamId: b.teamId || null, teamMode: b.teamMode === 'parallel' ? 'parallel' : 'coordinator',
     messages: [], createdAt: Date.now(),
   };
   fs.mkdirSync(chat.workspace, { recursive: true });
@@ -361,6 +387,7 @@ api.patch('/chats/:id', wrap((req, res) => {
   if (b.serverAccess) chat.serverAccess = b.serverAccess === 'full' && req.user.admin ? 'full' : 'project';
   if (b.serverDir) chat.serverDir = String(b.serverDir);
   if (b.teamId !== undefined) chat.teamId = b.teamId || null;
+  if (b.teamMode !== undefined) chat.teamMode = ['parallel', 'coordinator'].includes(b.teamMode) ? b.teamMode : 'coordinator';
   if (b.phoneAccess) chat.phoneAccess = { full: !!b.phoneAccess.full, folders: (b.phoneAccess.folders || []).map(String) };
   if (b.project) { chat.project = sanitizeProject(b.project); chat.workspace = path.join(userRoot(req.user), chat.project); fs.mkdirSync(chat.workspace, { recursive: true }); chat.claudeSessionId = null; }
   store.saveChat(req.user.id, chat);
