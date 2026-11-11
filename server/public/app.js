@@ -142,6 +142,7 @@
       const a = m.args || {};
       if (m.tool === 'take_photo') { toast('📷 ИИ просит сделать фото'); r = await nativeAsync('takePhoto', a.camera || 'back'); }
       else if (m.tool === 'list') r = JSON.parse(A.listFiles(a.path));
+      else if (m.tool === 'find') r = phoneFind(a.path, a.query, a.limit || 200);
       else if (m.tool === 'read') r = JSON.parse(A.readFile(a.path, a.maxBytes || 2097152));
       else if (m.tool === 'write') r = JSON.parse(A.writeFile(a.path, a.base64));
       else if (m.tool === 'delete') r = JSON.parse(A.deletePath(a.path));
@@ -149,6 +150,28 @@
       if (r.error) throw new Error(r.error);
       reply(true, r);
     } catch (e) { reply(false, null, e.message); }
+  }
+
+  // recursive search on the phone using the native listFiles bridge
+  function phoneFind(root, query, limit) {
+    const q = String(query || '').toLowerCase();
+    const re = /[*?]/.test(q) ? new RegExp('^' + q.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$') : null;
+    const items = [], queue = [root];
+    let scanned = 0;
+    while (queue.length && items.length < limit && scanned < 20000) {
+      const dir = queue.shift();
+      let r;
+      try { r = JSON.parse(A.listFiles(dir)); } catch { continue; }
+      if (r.error) { if (dir === root) throw new Error(r.error); continue; }
+      for (const it of r.items) {
+        scanned++;
+        const full = dir.replace(/\/$/, '') + '/' + it.name;
+        const n = it.name.toLowerCase();
+        if (re ? re.test(n) : n.includes(q)) { items.push({ path: full, dir: it.dir, size: it.size }); if (items.length >= limit) break; }
+        if (it.dir && !(dir === '/storage/emulated/0' && it.name === 'Android')) queue.push(full);
+      }
+    }
+    return { items, truncated: items.length >= limit };
   }
 
   // ---------------- auth screens ----------------
@@ -291,7 +314,7 @@
   let rq = false;
   function scheduleRender() { if (rq) return; rq = true; requestAnimationFrame(() => { rq = false; renderMsgs(); }); }
 
-  const TOOL_ICONS = { install_packages: '🧰', bash: '💻', read_file: '📖', write_file: '📝', edit_file: '✏️', list_dir: '📂', delete_path: '🗑', move_path: '🔀', web_fetch: '🌐', web_search: '🔎', download_file: '⬇️', view_image: '🖼', send_file: '📦', phone_take_photo: '📷', phone_list_files: '📱', phone_read_file: '📱', phone_write_file: '📱', phone_to_server: '📲', server_to_phone: '📲', phone_delete: '📱', Bash: '💻', Read: '📖', Write: '📝', Edit: '✏️', MultiEdit: '✏️', Glob: '📂', Grep: '🔎', LS: '📂', WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Task: '🧩' };
+  const TOOL_ICONS = { install_packages: '🧰', phone_find: '🔍', bash: '💻', read_file: '📖', write_file: '📝', edit_file: '✏️', list_dir: '📂', delete_path: '🗑', move_path: '🔀', web_fetch: '🌐', web_search: '🔎', download_file: '⬇️', view_image: '🖼', send_file: '📦', phone_take_photo: '📷', phone_list_files: '📱', phone_read_file: '📱', phone_write_file: '📱', phone_to_server: '📲', server_to_phone: '📲', phone_delete: '📱', Bash: '💻', Read: '📖', Write: '📝', Edit: '✏️', MultiEdit: '✏️', Glob: '📂', Grep: '🔎', LS: '📂', WebFetch: '🌐', WebSearch: '🔎', TodoWrite: '✅', Task: '🧩' };
   function toolSummary(tc) {
     const a = tc.args || {};
     if (Array.isArray(a.packages)) return a.packages.join(' ');
@@ -306,7 +329,7 @@
     for (const m of S.chat.messages) if (m.role === 'tool') results[m.toolCallId] = m;
     let html = '';
     if (!S.chat.messages.length && !S.run.running) {
-      html = `<div class="empty"><div class="big">💬</div>${S.chat.serverAccess === 'full' ? `<p>🖥 Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code></p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
+      html = `<div class="empty"><div class="big">💬</div>${S.chat.serverAccess === 'full' ? `<p>🖥 Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code>${S.chat.phoneAccess && S.chat.phoneAccess.full ? '<br>📱 + вся память телефона' : ''}</p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект», «Найди на телефоне все APK и скопируй на сервер».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
     }
     for (const m of S.chat.messages) {
       if (m.role === 'user') {
@@ -483,7 +506,24 @@
       $('#pother', el).value = '';
     };
     if ($('#pperm', el)) $('#pperm', el).onclick = () => A.requestStorage();
+    $('#pfull', el).onchange = (e) => { if (e.target.checked && A && A.hasStorage && !A.hasStorage()) A.requestStorage(); };
     return () => ({ full: $('#pfull', el).checked, folders: [...el.querySelectorAll('[data-pf]')].filter((c) => c.checked).map((c) => c.dataset.pf) });
+  }
+
+  function maxAccessHtml() {
+    if (!S.user || !S.user.admin) return '';
+    return `<button class="btn primary block" id="maxacc" style="margin:4px 0 6px">⚡ Сервер + телефон: весь VPS и вся память телефона</button>`;
+  }
+  function bindMaxAccess(el) {
+    const b = $('#maxacc', el);
+    if (!b) return;
+    b.onclick = () => {
+      const f = el.querySelector('[name=sacc][value=full]');
+      if (f) { f.checked = true; f.onchange && f.onchange(); }
+      const pf = $('#pfull', el); if (pf) pf.checked = true;
+      if (A && A.hasStorage && !A.hasStorage()) { toast('Разрешите Kala доступ ко всем файлам'); A.requestStorage(); }
+      else toast('Выбран полный доступ: VPS + вся память телефона');
+    };
   }
 
   function serverAccessHtml(c) {
@@ -515,6 +555,7 @@
     else { const g = groups.find((g) => g.models.length); if (g) sel = { p: g.provider, m: g.models[0].id }; }
     sheet(`<h3>Новый чат</h3>
       <div class="muted">Модель</div><button class="btn block" id="msel" style="justify-content:space-between"></button>
+      ${maxAccessHtml()}
       ${serverAccessHtml(null)}
       <div class="muted" style="margin-top:12px">Папка проекта на сервере</div>
       <input class="field" id="proj" list="projs" placeholder="Новая папка (например my-game) или выберите">
@@ -529,6 +570,7 @@
       el.querySelectorAll('[data-pj]').forEach((b) => b.onclick = () => { $('#proj', el).value = b.dataset.pj; });
       const getPA = bindPhoneAccess(el);
       const getSA = bindServerAccess(el);
+      bindMaxAccess(el);
       $('#create', el).onclick = async () => {
         if (!sel) return toast('Выберите модель');
         try {
@@ -546,6 +588,7 @@
     sheet(`<h3>Настройки чата</h3>
       <input class="field" id="ctitle" value="${esc(c.title)}" placeholder="Название">
       <div class="muted">Модель</div><button class="btn block" id="cm">🧠 ${esc(c.model)} ▾</button>
+      ${maxAccessHtml()}
       ${serverAccessHtml(c)}
       <div class="muted" style="margin-top:10px">Папка проекта</div>
       <div class="row"><input class="field grow" id="cproj" value="${esc(c.project || c.workspace.split('/').pop())}"><button class="btn small" id="cfiles">📁</button></div>
@@ -555,6 +598,7 @@
       <button class="btn danger block" id="cdel">Удалить чат</button>`, (el, close) => {
       const getPA = bindPhoneAccess(el);
       const getSA = bindServerAccess(el);
+      bindMaxAccess(el);
       $('#cm', el).onclick = () => pickModel(c.provider, c.model, async (p, m) => {
         await api('/chats/' + c.id, { method: 'PATCH', body: { provider: p, model: m } });
         c.provider = p; c.model = m; $('#cm', el).textContent = '🧠 ' + m + ' ▾'; renderHeader();

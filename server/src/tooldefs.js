@@ -25,11 +25,13 @@ const DEFS = [
   { name: 'send_file', description: 'Отправить файл с сервера пользователю в чат (кнопка скачать на телефон). Например готовый APK.', parameters: S({ path: { type: 'string' } }, ['path']) },
   { name: 'phone_take_photo', description: 'Сделать фото камерой телефона пользователя (пользователь нажмёт на кнопку съёмки). Фото сохраняется в проект и показывается вам.',
     parameters: S({ camera: { type: 'string', enum: ['back', 'front'] }, save_as: { type: 'string', description: 'путь на сервере, по умолчанию photos/photo_<время>.jpg' } }) },
-  { name: 'phone_list_files', description: 'Список файлов в папке на телефоне (например /storage/emulated/0/Download). Доступны только разрешённые папки.', parameters: S({ path: { type: 'string' } }, ['path']) },
+  { name: 'phone_list_files', description: 'Список файлов в папке на телефоне. Корень всей памяти: /storage/emulated/0 (Download, DCIM, Documents, Pictures, Android…). Доступны только разрешённые папки.', parameters: S({ path: { type: 'string', description: 'по умолчанию /storage/emulated/0' } }) },
   { name: 'phone_read_file', description: 'Прочитать текстовый файл с телефона.', parameters: S({ path: { type: 'string' } }, ['path']) },
   { name: 'phone_write_file', description: 'Записать текстовый файл на телефон.', parameters: S({ path: { type: 'string' }, content: { type: 'string' } }, ['path', 'content']) },
   { name: 'phone_to_server', description: 'Скопировать файл (любой, в т.ч. бинарный) с телефона на сервер.', parameters: S({ phone_path: { type: 'string' }, server_path: { type: 'string' } }, ['phone_path', 'server_path']) },
   { name: 'server_to_phone', description: 'Скопировать файл с сервера на телефон.', parameters: S({ server_path: { type: 'string' }, phone_path: { type: 'string' } }, ['server_path', 'phone_path']) },
+  { name: 'phone_find', description: 'Найти файлы на телефоне по части имени (рекурсивно), например "*.apk", "report", ".jpg". По умолчанию ищет во всей разрешённой памяти.',
+    parameters: S({ query: { type: 'string' }, path: { type: 'string', description: 'где искать, по умолчанию /storage/emulated/0' }, limit: { type: 'number' } }, ['query']) },
   { name: 'phone_delete', description: 'Удалить файл/папку на телефоне.', parameters: S({ path: { type: 'string' } }, ['path']) },
 ];
 

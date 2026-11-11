@@ -132,6 +132,11 @@ async function phone(ctx, tool, args, timeoutMs = 120000) {
   return ctx.phoneCall(tool, args, timeoutMs);
 }
 
+function defaultPhoneDir(ctx) {
+  const pa = ctx.chat.phoneAccess || {};
+  return pa.full ? '/storage/emulated/0' : ((pa.folders || [])[0] || '/storage/emulated/0');
+}
+
 function checkPhonePath(ctx, p) {
   const allowed = ctx.chat.phoneAccess || { full: false, folders: [] };
   const norm = path.posix.normalize(String(p || ''));
@@ -250,7 +255,7 @@ async function exec(ctx, name, args) {
         return { content: `Фото сделано и сохранено: ${f} (${buf.length} байт)`, images: [m.id] };
       }
       case 'phone_list_files': {
-        const p = checkPhonePath(ctx, args.path);
+        const p = checkPhonePath(ctx, args.path || defaultPhoneDir(ctx));
         const r = await phone(ctx, 'list', { path: p });
         return { content: p + '\n' + r.items.map((i) => i.name + (i.dir ? '/' : ` (${i.size} б)`)).join('\n') };
       }
@@ -278,6 +283,11 @@ async function exec(ctx, name, args) {
         const buf = rfs.readFile(f, ctx.root);
         await phone(ctx, 'write', { path: p, base64: buf.toString('base64') }, 10 * 60000);
         return { content: `Скопировано ${buf.length} байт: сервер ${f} → телефон ${p}` };
+      }
+      case 'phone_find': {
+        const p = checkPhonePath(ctx, args.path || defaultPhoneDir(ctx));
+        const r = await phone(ctx, 'find', { path: p, query: String(args.query || ''), limit: Math.min(args.limit || 200, 1000) }, 5 * 60000);
+        return { content: r.items.length ? `Найдено ${r.items.length}${r.truncated ? '+' : ''} в ${p}:\n` + r.items.map((i) => i.path + (i.dir ? '/' : ` (${i.size} б)`)).join('\n') : 'Ничего не найдено в ' + p };
       }
       case 'phone_delete': {
         const p = checkPhonePath(ctx, args.path);
