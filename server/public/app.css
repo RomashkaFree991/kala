@@ -240,3 +240,14 @@ details.think.live summary{color:var(--fg)}
 .dl.add{background:rgba(126,226,168,.10);color:#b9f3cf}
 .dl.del{background:rgba(255,128,128,.10);color:#ffb3b3}
 .diff.only .dl:not(.add):not(.del){display:none}
+
+#msgs.loading{opacity:.35;transition:opacity .15s}
+#msgs > div.anim > .msg{animation:rise .38s var(--ease) both}
+.midrun{font-size:11px;opacity:.6;margin-top:4px}
+.composer .send.stop{margin-right:4px}
+.agents{border:1px solid var(--line2);border-radius:14px;background:var(--bg2);margin:8px 0;overflow:hidden}
+.agents .ah{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px}
+.arow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:8px 12px;border:0;background:transparent;color:var(--fg);border-bottom:1px solid var(--line)}
+.arow:last-child{border-bottom:0}
+.arow small{display:block;color:var(--fg2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100vw - 110px)}
+.i.flip{transform:rotate(180deg)}

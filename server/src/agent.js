@@ -13,6 +13,7 @@ const gdrive = require('./gdrive');
 const secrets = require('./secrets');
 const skills = require('./skills');
 const usage = require('./usage');
+const teams = require('./teams');
 const notify = require('./notify');
 const history = require('./history');
 const { MAX_AGENT_STEPS, PORT, DATA_DIR } = require('./config');
@@ -28,7 +29,7 @@ const key = (uid, cid) => uid + ':' + cid;
 
 function runState(uid, chatId) {
   const r = runs.get(key(uid, chatId));
-  return r ? { running: true, partial: r.partial, toolOutputs: r.toolOutputs, status: r.status, thinking: r.thinking, drafts: r.drafts, form: r.form ? r.form.public : null } : { running: false };
+  return r ? { running: true, partial: r.partial, toolOutputs: r.toolOutputs, status: r.status, thinking: r.thinking, drafts: r.drafts, form: r.form ? r.form.public : null, agents: r.agents } : { running: false };
 }
 
 // ---- live progress: status line, thinking, tool calls being written ----
@@ -39,7 +40,7 @@ function summary(name, a) {
   const v = a.command || a.path || a.file_path || a.url || a.query || a.title || a.name || a.source || (a.packages && a.packages.join(' ')) || a.element || '';
   return String(v).replace(/\s+/g, ' ').slice(0, 120);
 }
-function setStatus(uid, chatId, run, text) { run.status = text; emit(uid, chatId, { t: 'status', text }); }
+function setStatus(uid, chatId, run, text) { run.status = text; emit(uid, chatId, { t: 'status', text }); if (run.parentHook) run.parentHook(text); }
 function makeDraftEmitter(uid, chatId, run) {
   const pend = {};
   let timer = null;
@@ -105,9 +106,10 @@ ${mode}
 - Секреты / .env: ask_user показывает пользователю окно ввода (токены ботов, API-ключи, api_id/api_hash Telegram, коды подтверждения). Сохранённые секреты автоматически доступны как переменные окружения во всех командах и службах: ${secretNames.join(', ') || 'пока нет'}. Никогда не проси прислать секрет обычным сообщением и не выводи значения секретов.
 - Боты и серверы 24/7: service_create (systemd, автоперезапуск) + service_control (логи, рестарт). Для Telegram-бота: попроси токен через ask_user (BOT_TOKEN), напиши код, поставь зависимости, запусти через service_create, проверь логи.
 - Telegram-аккаунт пользователя (не бот): через Telethon/Pyrogram — попроси api_id/api_hash (my.telegram.org) и телефон через ask_user, код из Telegram — вторым ask_user; сессию храни в папке проекта.
+- Прошлые чаты: chats_list, chat_search, chat_read — полный текст любой прошлой сессии (все сообщения, действия, результаты). Если пользователь ссылается на прошлую работу («как вчера», «продолжи тот проект») — найди и прочитай нужный чат.
 - Скиллы и память: skill_install (скачать скилл по ссылке, например из github.com/anthropics/skills), skill_create (сохранить свой рецепт), memory_save (запомнить факт навсегда). Когда узнаёшь что-то важное о пользователе или его проектах — сохраняй в память.
 - Расписание: schedule_create (каждое утро проверять сайт, постить в канал, делать бэкап…), schedule_list/delete; notify_user — push на телефон.
-- Команда агентов: agents_run — несколько ИИ параллельно (напр. «программист» и «тестировщик»), можно с разными моделями.
+${chat.teamId && teams.get(user.id, chat.teamId) ? '- В ЭТОМ ЧАТЕ ПОДКЛЮЧЕНА КОМАНДА «' + teams.get(user.id, chat.teamId).name + '». Участники (вызывай их через agents_run по role — модель и инструкции подставятся сами):\n' + teams.roster(teams.get(user.id, chat.teamId)) + '\n  Дели работу так, чтобы агенты не правили одни и те же файлы; после их работы проверяй и собирай результат.\n' : ''}- Команда агентов: agents_run — несколько ИИ параллельно (напр. «программист» и «тестировщик»), можно с разными моделями.
 - Сайты: publish_site — публикация на <имя>.${require('./sites').baseDomain() || 'домен'} с HTTPS (папка со статикой или порт запущенного сервера).
 - server_status — нагрузка/память/диск; share_file — публичная ссылка + QR (например APK для другого телефона).
 - Медиа: generate_image (бесплатно через pollinations или OpenAI/Gemini/Replicate/fal), generate_video (Replicate/fal ключ). telegram_post — пост в канал через бота (картинка/видео/текст). Автопостинг = schedule_create + генерация + telegram_post (или TikTok через браузер: browser_upload).
@@ -120,7 +122,22 @@ ${skills.promptBlock(user.id)}`;
 }
 
 // Convert messages produced by Claude Code CLI into plain text for API providers.
+function reorderMidRun(messages) {
+  const out = [];
+  let held = [];
+  let pending = new Set();
+  for (const m of messages) {
+    if (m.role === 'assistant' && !m.cli) { out.push(...held); held = []; pending = new Set((m.toolCalls || []).map((t) => t.id)); out.push(m); continue; }
+    if (m.role === 'tool' && !m.cli) { pending.delete(m.toolCallId); out.push(m); if (!pending.size) { out.push(...held); held = []; } continue; }
+    if (m.role === 'user' && pending.size) { held.push(m); continue; }
+    out.push(m);
+  }
+  out.push(...held);
+  return out.map((m) => (m.midRun && m.role === 'user' ? { ...m, content: '[Новое сообщение пользователя, пока ты работал — учти его]: ' + m.content } : m));
+}
+
 function normalizeForApi(messages) {
+  messages = reorderMidRun(messages);
   const out = [];
   for (const m of messages) {
     if (!m.cli) { if (m.role !== 'event') out.push(m); continue; }
@@ -172,7 +189,7 @@ async function runApi(uid, user, chat, run) {
   for (let step = 0; step < MAX_AGENT_STEPS; step++) {
     if (run.abort.signal.aborted) return;
     const phoneCall = phoneCaller(uid);
-    run.partial = ''; run.thinking = ''; run.drafts = {};
+    run.partial = ''; run.thinking = ''; run.drafts = {}; run.newInput = false;
     setStatus(uid, chat.id, run, step ? 'Анализирует результат…' : 'Думает над задачей…');
     const dr = makeDraftEmitter(uid, chat.id, run);
     const res = await llm.stream({
@@ -186,7 +203,7 @@ async function runApi(uid, user, chat, run) {
     run.partial = '';
     const amsg = addMessage(uid, chat, { role: 'assistant', content: res.text, toolCalls: res.toolCalls, reasoning: res.reasoning || run.thinking || undefined, model: chat.model });
     run.drafts = {}; run.thinking = '';
-    if (!amsg.toolCalls.length) return;
+    if (!amsg.toolCalls.length) { if (run.newInput) continue; return; }
     for (const tc of amsg.toolCalls) {
       if (run.abort.signal.aborted) {
         addMessage(uid, chat, { role: 'tool', toolCallId: tc.id, name: tc.name, content: 'Остановлено пользователем', isError: true });
@@ -214,31 +231,76 @@ async function runApi(uid, user, chat, run) {
 }
 
 // ---------- parallel sub-agents ----------
+const slugify = (x) => String(x).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent';
+
 async function runAgents(user, parent, list, run) {
   if (!list.length) return 'Нет задач';
-  if (list.length > 6) list = list.slice(0, 6);
-  const children = list.map((a, i) => {
+  list = list.slice(0, 12);
+  const team = parent.teamId ? teams.get(user.id, parent.teamId) : null;
+  // fill model/instructions from the chat's team by role name
+  const specs = list.map((a) => {
+    const m = team && team.members.find((x) => x.role.toLowerCase() === String(a.role || '').toLowerCase());
+    return { role: a.role || (m && m.role) || 'Агент', task: a.task || '', provider: a.provider || (m && m.provider), model: a.model || (m && m.model), prompt: a.prompt || (m && m.prompt) || '', folder: a.folder || (m && m.folder) || 'shared' };
+  });
+  const rosterText = specs.map((x) => `«${x.role}»: ${x.task.slice(0, 200)}`).join('\n');
+  const children = specs.map((a, i) => {
     const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex') + i;
     let provider = a.provider || parent.provider, model = a.model || parent.model;
     try { providers.resolve(user.id, provider); } catch { provider = parent.provider; model = parent.model; }
-    const chat = { id, title: '↳ ' + a.role, provider, model, workspace: parent.workspace, project: parent.project, serverAccess: parent.serverAccess, serverDir: parent.serverDir,
-      phoneAccess: parent.phoneAccess, parentId: parent.id, messages: [], createdAt: Date.now() };
+    const workspace = a.folder === 'own' ? path.join(parent.workspace, 'agents', slugify(a.role)) : parent.workspace;
+    fs.mkdirSync(workspace, { recursive: true });
+    const chat = { id, title: '↳ ' + a.role, provider, model, workspace, project: parent.project, serverAccess: parent.serverAccess, serverDir: parent.serverDir,
+      phoneAccess: parent.phoneAccess, parentId: parent.id, role: a.role, messages: [], createdAt: Date.now() };
     store.saveChat(user.id, chat);
     return { a, chat };
   });
+  // live panel in the parent chat
+  run.agents = children.map(({ a, chat }) => ({ id: chat.id, role: a.role, model: chat.model, status: 'Запуск…', state: 'running' }));
+  let t = null;
+  const push = () => { if (t) return; t = setTimeout(() => { t = null; emit(user.id, parent.id, { t: 'agents', agents: run.agents }); }, 250); };
+  push();
   broadcast(user.id, { t: 'chats_changed' });
-  setStatus(user.id, parent.id, run, `Работают ${children.length} агента параллельно: ${list.map((x) => x.role).join(', ')}`);
-  const results = await Promise.all(children.map(async ({ a, chat }) => {
+  setStatus(user.id, parent.id, run, `Работают агенты: ${children.length} (${specs.map((x) => x.role).join(', ')})`);
+  const results = await Promise.all(children.map(async ({ a, chat }, i) => {
+    const entry = run.agents[i];
     try {
-      const { done } = await startRun(user, chat.id, `Ты — «${a.role}» в команде ИИ-агентов, работающих параллельно в одной папке проекта (${chat.workspace}). Делай только свою часть, не мешай другим. В конце кратко отчитайся, что сделано.\n\nЗадача: ${a.task}`, [], { notify: false });
+      const prompt = `Ты — «${a.role}» в команде ИИ-агентов, которые работают ОДНОВРЕМЕННО. Папка: ${chat.workspace}${a.folder === 'own' ? ' (это твоя отдельная папка; общий проект — ' + parent.workspace + ')' : ' (общая для всей команды)'}.
+${a.prompt ? 'Твои инструкции: ' + a.prompt + '\n' : ''}Вся команда и их задачи:
+${rosterText}
+
+Правила, чтобы не мешать друг другу: делай ТОЛЬКО свою часть; не переписывай и не удаляй файлы, за которые отвечают другие; не запускай долгие процессы на чужих портах; если тебе нужен результат другого агента — опиши это в отчёте. В конце дай короткий отчёт: что сделал, какие файлы создал/изменил, что проверил, какие проблемы остались.
+
+Твоя задача: ${a.task}`;
+      const { done } = await startRun(user, chat.id, prompt, [], { notify: false, parentHook: (st) => { entry.status = st; push(); } });
       const onAbort = () => stopRun(user.id, chat.id);
       run.abort.signal.addEventListener('abort', onAbort);
-      const r = await done;
+      const res = await done;
       run.abort.signal.removeEventListener('abort', onAbort);
-      return `### ${a.role} (${chat.model})\n${r.error ? 'Ошибка: ' + r.error : r.text || '(без ответа)'}`;
-    } catch (e) { return `### ${a.role}\nОшибка: ${e.message}`; }
+      entry.state = res.error ? 'error' : 'done'; entry.status = res.error ? 'Ошибка: ' + res.error : 'Готово'; push();
+      return `### ${a.role} (${chat.model})\n${res.error ? 'Ошибка: ' + res.error : res.text || '(без ответа)'}`;
+    } catch (e) { entry.state = 'error'; entry.status = e.message; push(); return `### ${a.role}\nОшибка: ${e.message}`; }
   }));
   return 'Результаты агентов:\n\n' + results.join('\n\n');
+}
+
+// Run a whole team on one task (from the Teams page)
+async function runTeam(user, teamId, task, { project, mode = 'coordinator' } = {}) {
+  const team = teams.get(user.id, teamId);
+  if (!team) throw new Error('Команда не найдена');
+  const coord = team.coordinator && team.coordinator.model ? team.coordinator : team.members[0];
+  let provider = coord.provider, model = coord.model;
+  try { providers.resolve(user.id, provider); } catch { const m = team.members.find((x) => { try { providers.resolve(user.id, x.provider); return true; } catch { return false; } }); if (!m) throw new Error('Ни одна модель команды не подключена'); provider = m.provider; model = m.model; }
+  const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
+  const proj = String(project || '').trim().replace(/[^\p{L}\p{N}_.-]+/gu, '_') || 'team-' + id;
+  const ws = path.join(require('./config').WORKSPACES_DIR, user.username, proj);
+  fs.mkdirSync(ws, { recursive: true });
+  const chat = { id, title: '👥 ' + team.name + ': ' + String(task).replace(/\s+/g, ' ').slice(0, 40), provider, model, workspace: ws, project: proj, teamId: team.id, phoneAccess: { full: false, folders: [] }, messages: [], createdAt: Date.now() };
+  store.saveChat(user.id, chat);
+  const text = mode === 'direct'
+    ? `Запусти ВСЮ команду параллельно через agents_run — каждому агенту одна и та же общая задача (каждый делает свою часть по своей роли). Затем проверь результаты, при необходимости поправь, и дай итоговый отчёт.\n\nОбщая задача: ${task}`
+    : `Ты координатор команды агентов. Раздели задачу на части по ролям команды, запусти агентов параллельно через agents_run (каждому — конкретная понятная часть, без пересечений по файлам), затем проверь их работу (собери, запусти тесты), исправь стыки и дай итоговый отчёт. При необходимости запускай вторую волну агентов.\n\nЗадача: ${task}`;
+  await startRun(user, id, text, []);
+  return chat;
 }
 
 // ---------- scheduled tasks ----------
@@ -399,14 +461,22 @@ async function internalTool(token, name, args) {
 async function startRun(user, chatId, text, images, opts = {}) {
   const uid = user.id;
   const k = key(uid, chatId);
-  if (runs.has(k)) throw Object.assign(new Error('ИИ уже работает в этом чате — дождитесь или остановите'), { status: 409 });
+  if (runs.has(k)) {
+    // the AI is working: add the message now, the running loop sees it on its next step
+    const run = runs.get(k);
+    addMessage(uid, run.chat, { role: 'user', content: String(text || ''), images: images && images.length ? images : undefined, midRun: true });
+    run.newInput = true;
+    setStatus(uid, chatId, run, 'Получил новое сообщение — учту на следующем шаге…');
+    return { done: run.done, queued: true };
+  }
   const chat = store.getChat(uid, chatId);
   if (!chat) throw Object.assign(new Error('Чат не найден'), { status: 404 });
   if (!chat.title || chat.title === 'Новый чат') {
     chat.title = String(text).replace(/\s+/g, ' ').slice(0, 60) || 'Новый чат';
   }
   addMessage(uid, chat, { role: 'user', content: String(text || ''), images: images && images.length ? images : undefined });
-  const run = { abort: new AbortController(), partial: '', toolOutputs: {}, cliExtras: {}, chat, status: 'Запуск…', thinking: '', drafts: {}, form: null };
+  const run = { abort: new AbortController(), partial: '', toolOutputs: {}, cliExtras: {}, chat, status: 'Запуск…', thinking: '', drafts: {}, form: null, newInput: false, agents: null };
+  if (opts.parentHook) run.parentHook = opts.parentHook;
   runs.set(k, run);
   emit(uid, chatId, { t: 'run_start' });
   broadcast(uid, { t: 'chats_changed' });
@@ -422,7 +492,17 @@ async function startRun(user, chatId, text, images, opts = {}) {
           fs.mkdirSync(dir, { recursive: true });
           for (const id of images) { const f = path.join(dir, id); fs.copyFileSync(store.mediaPath(uid, id), f); prompt += `\n[Пользователь приложил изображение: ${f}]`; }
         }
+        run.newInput = false;
+        let mark = chat.messages.length;
         await runClaudeCli(uid, user, chat, run, prompt);
+        // messages written while Claude Code was working -> continue the same session with them
+        while (run.newInput && !run.abort.signal.aborted) {
+          run.newInput = false;
+          const fresh = chat.messages.slice(mark).filter((m) => m.role === 'user' && m.midRun).map((m) => m.content).join('\n\n');
+          mark = chat.messages.length;
+          if (!fresh) break;
+          await runClaudeCli(uid, user, chat, run, 'Пока ты работал, пользователь написал (учти это, продолжая задачу):\n' + fresh);
+        }
       } else await runApi(uid, user, chat, run);
     } catch (e) {
       if (!run.abort.signal.aborted) {
@@ -443,6 +523,7 @@ async function startRun(user, chatId, text, images, opts = {}) {
     const last = [...chat.messages].reverse().find((m) => m.role === 'assistant' && m.content);
     return { error, text: last ? last.content : '' };
   })();
+  run.done = done;
   return { done };
 }
 
@@ -455,4 +536,4 @@ function stopRun(uid, chatId) {
 // While a run is active its chat object is the source of truth (settings edits must go there).
 function liveChat(uid, chatId) { const r = runs.get(key(uid, chatId)); return r ? r.chat : null; }
 
-module.exports = { runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };
+module.exports = { runTeam, runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };

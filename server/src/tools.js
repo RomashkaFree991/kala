@@ -432,6 +432,40 @@ async function exec(ctx, name, args) {
         const r = await android.tool(ctx.uid, name, args, ctx);
         return { ...r, content: clip(r.content) };
       }
+      case 'chats_list': {
+        const q = String(args.query || '').toLowerCase();
+        const l = store.listChats(ctx.uid).filter((c) => !q || (c.title + ' ' + c.workspace + ' ' + c.model).toLowerCase().includes(q)).slice(0, Math.min(args.limit || 60, 300));
+        return { content: l.map((c) => { const full = store.getChat(ctx.uid, c.id); const first = full && full.messages.find((m) => m.role === 'user'); return `${c.id} | ${new Date(c.updatedAt).toLocaleString('ru-RU')} | «${c.title}» | ${c.messageCount} сообщ. | ${c.provider}/${c.model} | папка ${c.workspace}${c.id === ctx.chat.id ? ' (ЭТОТ ЧАТ)' : ''}\n   начало: ${first ? String(first.content).replace(/\s+/g, ' ').slice(0, 160) : ''}`; }).join('\n') || 'Чатов нет' };
+      }
+      case 'chat_read': {
+        const c = store.getChat(ctx.uid, String(args.chat_id || ''));
+        if (!c) return { content: 'Чат не найден: ' + args.chat_id, isError: true };
+        const off = Math.max(0, args.offset || 0), lim = Math.min(args.limit || 80, 300);
+        const per = args.full ? 20000 : 1500;
+        const lines = c.messages.slice(off, off + lim).map((m, i) => {
+          const n = off + i, t = new Date(m.ts || 0).toLocaleString('ru-RU');
+          if (m.role === 'user') return `#${n} [${t}] ПОЛЬЗОВАТЕЛЬ: ${m.content}${m.images && m.images.length ? ' [+' + m.images.length + ' изобр.]' : ''}`;
+          if (m.role === 'assistant') return `#${n} [${t}] ИИ (${m.model || c.model}): ${m.content || ''}` + (m.toolCalls || []).map((tc) => `\n   → ${tc.name} ${JSON.stringify(tc.args).slice(0, args.full ? 20000 : 600)}`).join('');
+          if (m.role === 'tool') return `#${n} РЕЗУЛЬТАТ ${m.name}${m.isError ? ' (ошибка)' : ''}: ${String(m.content).slice(0, per)}${m.file ? ' [файл ' + m.file.path + ']' : ''}`;
+          return `#${n} [событие] ${m.content}`;
+        });
+        return { content: `Чат «${c.title}» (${c.id}), папка ${c.workspace}, модель ${c.provider}/${c.model}, всего ${c.messages.length} сообщений. Показаны ${off}–${Math.min(off + lim, c.messages.length) - 1}.${off + lim < c.messages.length ? ' Дальше: offset=' + (off + lim) : ''}\n\n` + clip(lines.join('\n\n'), 60000) };
+      }
+      case 'chat_search': {
+        const q = String(args.query || '').toLowerCase();
+        if (!q) return { content: 'Пустой запрос', isError: true };
+        const hits = [];
+        for (const meta of store.listChats(ctx.uid)) {
+          const c = store.getChat(ctx.uid, meta.id); if (!c) continue;
+          c.messages.forEach((m, i) => {
+            const text = String(m.content || '') + ' ' + (m.toolCalls || []).map((tc) => JSON.stringify(tc.args)).join(' ');
+            const pos = text.toLowerCase().indexOf(q);
+            if (pos >= 0 && hits.length < 60) hits.push(`${c.id} «${c.title}» #${i} (${m.role}): …${text.slice(Math.max(0, pos - 80), pos + 160).replace(/\s+/g, ' ')}…`);
+          });
+          if (hits.length >= 60) break;
+        }
+        return { content: hits.length ? hits.join('\n') + '\n\nЧтобы прочитать подробно: chat_read(chat_id, offset)' : 'Ничего не найдено' };
+      }
       case 'gdrive_list': return { content: clip(await gdrive.list(ctx.uid, args.folder)) };
       case 'gdrive_search': return { content: clip(await gdrive.search(ctx.uid, args.query)) };
       case 'gdrive_download': return { content: await gdrive.download(ctx.uid, args.file, abs(ctx, args.server_path), ctx.root, ctx.signal) };

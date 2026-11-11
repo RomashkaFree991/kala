@@ -17,13 +17,15 @@ function setBroadcast(fn) { broadcast = fn; }
 
 const VIEWPORTS = { desktop: { width: 1280, height: 800, mobile: false }, mobile: { width: 412, height: 860, mobile: true } };
 
-function cliPath() { return require.resolve('playwright-core/cli.js'); }
+function cliPath() { return path.join(path.dirname(require.resolve('playwright-core/package.json')), 'cli.js'); }
 function installBrowser() {
   return new Promise((resolve) => {
     const env = { ...process.env };
     // system libraries (needs root; ignore failures), then the browser itself for this user
-    execFile('sudo', ['-n', process.execPath, cliPath(), 'install-deps', 'chromium'], { env, timeout: 15 * 60000 }, () => {
-      execFile(process.execPath, [cliPath(), 'install', 'chromium'], { env, timeout: 15 * 60000 }, (e, out, err) => resolve(e ? String(err || e.message).slice(-800) : null));
+    let cli;
+    try { cli = cliPath(); } catch (e) { return resolve(e.message); }
+    execFile('sudo', ['-n', process.execPath, cli, 'install-deps', 'chromium'], { env, timeout: 15 * 60000 }, () => {
+      execFile(process.execPath, [cli, 'install', 'chromium'], { env, timeout: 15 * 60000 }, (e, out, err) => resolve(e ? String(err || e.message).slice(-800) : null));
     });
   });
 }
@@ -44,10 +46,14 @@ async function launch(uid, mode = 'desktop') {
   const { chromium } = playwright();
   try { return await chromium.launchPersistentContext(profile, opts); }
   catch (e) {
-    if (!/Executable doesn't exist|install|shared librar|error while loading/i.test(e.message)) throw e;
+    if (!/Executable doesn't exist|install|shared librar|error while loading|Failed to launch/i.test(e.message)) throw e;
+    broadcast(uid, { t: 'browser_status', text: 'Скачиваю браузер Chromium (1-3 минуты, только первый раз)…' });
     const err = await installBrowser();
     try { return await chromium.launchPersistentContext(profile, opts); }
-    catch (e2) { throw new Error('Не удалось запустить браузер. ' + (err ? 'Установка: ' + err : e2.message.slice(0, 500))); }
+    catch (e2) {
+      const libs = /shared librar|error while loading/i.test(e2.message);
+      throw new Error('Не удалось запустить браузер. ' + (libs ? 'Не хватает системных библиотек — на сервере сломан apt (нет места/проблема с /tmp). Выполните на сервере: sudo bash ~/kala/server/doctor.sh skkapap.fun. ' : '') + (err ? 'Установка: ' + err.slice(-300) : e2.message.slice(0, 400)));
+    }
   }
 }
 

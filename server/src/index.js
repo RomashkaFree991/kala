@@ -231,6 +231,16 @@ api.post('/android/start', wrap(async (req, res) => {
     .catch((e) => broadcast(req.user.id, { t: 'android_log', done: true, error: e.message }));
 }));
 
+// ---------- agent teams ----------
+const teams = require('./teams');
+api.get('/teams', (req, res) => res.json({ teams: teams.list(req.user.id) }));
+api.post('/teams', wrap((req, res) => res.json({ team: teams.upsert(req.user.id, req.body) })));
+api.delete('/teams/:id', (req, res) => { teams.remove(req.user.id, req.params.id); res.json({ ok: true }); });
+api.post('/teams/:id/run', wrap(async (req, res) => {
+  const chat = await agent.runTeam(req.user, req.params.id, String(req.body.task || ''), { project: req.body.project, mode: req.body.mode });
+  res.json({ chat: { id: chat.id } });
+}));
+
 // ---------- secrets (.env) ----------
 api.get('/secrets', (req, res) => res.json({ secrets: secrets.list(req.user.id) }));
 api.put('/secrets/:name', wrap((req, res) => { secrets.set(req.user.id, req.params.name, req.body.value, req.body.desc); res.json({ ok: true }); }));
@@ -330,6 +340,7 @@ api.post('/chats', wrap((req, res) => {
     phoneAccess: { full: !!(b.phoneAccess && b.phoneAccess.full), folders: (b.phoneAccess && b.phoneAccess.folders) || [] },
     serverAccess: b.serverAccess === 'full' && req.user.admin ? 'full' : 'project',
     serverDir: b.serverDir || '/root',
+    teamId: b.teamId || null,
     messages: [], createdAt: Date.now(),
   };
   fs.mkdirSync(chat.workspace, { recursive: true });
@@ -349,6 +360,7 @@ api.patch('/chats/:id', wrap((req, res) => {
   }
   if (b.serverAccess) chat.serverAccess = b.serverAccess === 'full' && req.user.admin ? 'full' : 'project';
   if (b.serverDir) chat.serverDir = String(b.serverDir);
+  if (b.teamId !== undefined) chat.teamId = b.teamId || null;
   if (b.phoneAccess) chat.phoneAccess = { full: !!b.phoneAccess.full, folders: (b.phoneAccess.folders || []).map(String) };
   if (b.project) { chat.project = sanitizeProject(b.project); chat.workspace = path.join(userRoot(req.user), chat.project); fs.mkdirSync(chat.workspace, { recursive: true }); chat.claudeSessionId = null; }
   store.saveChat(req.user.id, chat);

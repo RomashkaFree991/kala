@@ -111,7 +111,7 @@
 
   function newRun(running, r) {
     r = r || {};
-    return { running: !!running, partial: r.partial || '', toolOutputs: r.toolOutputs || {}, status: r.status || '', thinking: r.thinking || '', drafts: r.drafts || {}, form: r.form || null };
+    return { running: !!running, partial: r.partial || '', toolOutputs: r.toolOutputs || {}, status: r.status || '', thinking: r.thinking || '', drafts: r.drafts || {}, form: r.form || null, agents: r.agents || null };
   }
   // show partially-streamed tool arguments in a readable way
   function draftText(a) {
@@ -122,6 +122,7 @@
     if (m.t === 'browser_frame') return onBrowserFrame(m);
     if (m.t === 'browser_nav') { const u = $('#burl'); if (u && document.activeElement !== u) u.value = m.url; return; }
     if (m.t === 'browser_closed') { hideBrowserMini(); return; }
+    if (m.t === 'browser_status') { const w = $('.bwait'); if (w) w.innerHTML = '<span class="spin"></span> ' + esc(m.text); return; }
     if (m.t === 'notify') { if (!S.chat || m.item.chatId !== S.chat.id || document.hidden) { toast(m.item.title + (m.item.body ? ': ' + m.item.body.slice(0, 80) : '')); } if (A && A.notify && document.hidden) A.notify(m.item.title, m.item.body || ''); return; }
     if (m.t === 'android_frame') { const a = $('#aimg'); if (a) { a.src = 'data:' + m.mime + ';base64,' + m.data; S.aframe = m; const w = $('.await'); if (w) w.remove(); } return; }
     if (m.t === 'android_log') { const l = $('#alog'); if (l) { l.textContent = m.error ? 'Ошибка: ' + m.error : m.text; } if (m.done && !m.error && $('#apage')) setAndroidView(true); return; }
@@ -133,12 +134,13 @@
     if (m.t === 'chat_updated') return loadChat(S.chat.id, true);
     if (m.t === 'run_start') { S.run = newRun(true); renderMsgs(); renderComposer(); updateConn(); }
     else if (m.t === 'run_end') { S.run = newRun(false); closeFormSheet(); renderMsgs(); renderComposer(); updateConn(); }
-    else if (m.t === 'status') { S.run.status = m.text; const el = $('#stext'); if (el) el.textContent = m.text; else scheduleRender(); }
+    else if (m.t === 'status') { S.run.status = m.text; const el = $('#stext'); if (el) el.textContent = m.text; else renderLive(); }
     else if (m.t === 'thinking') {
       S.run.thinking = (S.run.thinking || '') + m.text;
       const el = $('#thinktext');
-      if (el) { el.textContent = S.run.thinking.slice(-6000); el.scrollTop = el.scrollHeight; } else scheduleRender();
-    } else if (m.t === 'tool_draft') { S.run.drafts[m.id] = { name: m.name, args: '' }; scheduleRender(); }
+      if (el) { el.textContent = S.run.thinking.slice(-6000); el.scrollTop = el.scrollHeight; } else renderLive();
+    } else if (m.t === 'tool_draft') { S.run.drafts[m.id] = { name: m.name, args: '' }; renderLive(); }
+    else if (m.t === 'agents') { S.run.agents = m.agents; const p = $('#agentsPanel'); if (p) { p.innerHTML = agentsHtml(); bindBlock(p); } else renderLive(); }
     else if (m.t === 'tool_draft_delta') {
       const d = S.run.drafts[m.id]; if (!d) return;
       d.args = (d.args + m.text).slice(-30000);
@@ -150,7 +152,7 @@
     else if (m.t === 'android_active') { if (!$('#apage')) toast('ИИ работает с виртуальным Android — меню → Инструменты → Android'); }
     else if (m.t === 'msg') {
       if (!S.chat.messages.find((x) => x.id === m.message.id)) S.chat.messages.push(m.message);
-      if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; }
+      if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; const lv = document.querySelector('#msgs > [data-k="__live"]'); if (lv) lv.innerHTML = ''; }
       if (m.message.role === 'tool') delete S.run.toolOutputs[m.message.toolCallId];
       scheduleRender();
     } else if (m.t === 'delta') {
@@ -345,10 +347,17 @@
   }
 
   // ---------------- chat ----------------
+  let loadSeq = 0;
   async function loadChat(id, keepScroll) {
+    const seq = ++loadSeq;
+    if (!S.chat || S.chat.id !== id) { const box = $('#msgs'); if (box) box.classList.add('loading'); }
     try {
       const r = await api('/chats/' + id);
+      if (seq !== loadSeq) return; // a newer chat was opened meanwhile
+      const box = $('#msgs'); if (box) box.classList.remove('loading');
       const switching = !S.chat || S.chat.id !== id;
+      if (switching) for (const m of r.chat.messages) S.seen.add(m.id);
+      if (switching) document.querySelectorAll('.page').forEach((p) => p.remove());
       S.chat = r.chat;
       S.run = newRun(r.run.running, r.run);
       if (S.run.form) showFormSheet(S.run.form);
@@ -363,81 +372,126 @@
   let rq = false;
   function scheduleRender() { if (rq) return; rq = true; requestAnimationFrame(() => { rq = false; renderMsgs(); }); }
 
-  const TOOL_ICONS = { ask_user: 'key', secrets_list: 'key', write_env_file: 'key', service_create: 'server', service_control: 'server', service_list: 'server', skill_install: 'download', skill_create: 'spark', skill_read: 'filetext', skill_list: 'list', skill_delete: 'trash', memory_save: 'spark', memory_rewrite: 'spark', browser_open: 'globe', browser_snapshot: 'image', browser_click: 'globe', browser_type: 'pencil', browser_press: 'globe', browser_scroll: 'globe', browser_back: 'back', browser_eval: 'terminal', browser_upload: 'upload', browser_close: 'x', install_packages: 'package', phone_find: 'search', bash: 'terminal', read_file: 'filetext', write_file: 'pencil', edit_file: 'pencil', list_dir: 'folder', delete_path: 'trash', move_path: 'move', web_fetch: 'globe', web_search: 'search', download_file: 'download', view_image: 'image', send_file: 'package', phone_take_photo: 'camera', phone_list_files: 'phone', phone_read_file: 'phone', phone_write_file: 'phone', phone_to_server: 'upload', server_to_phone: 'download', phone_delete: 'trash', gdrive_list: 'drive', gdrive_search: 'drive', gdrive_download: 'download', gdrive_upload: 'upload', gdrive_mkdir: 'drive', gdrive_delete: 'trash', Bash: 'terminal', Read: 'filetext', Write: 'pencil', Edit: 'pencil', MultiEdit: 'pencil', Glob: 'folder', Grep: 'search', LS: 'folder', WebFetch: 'globe', WebSearch: 'search', TodoWrite: 'list', Task: 'cpu' };
-  const TOOL_NAMES = { ask_user: 'Запрос данных', secrets_list: 'Секреты', write_env_file: '.env файл', service_create: 'Запуск службы', service_control: 'Служба', service_list: 'Службы', skill_install: 'Установка скилла', skill_create: 'Новый скилл', skill_read: 'Скилл', skill_list: 'Скиллы', skill_delete: 'Удаление скилла', memory_save: 'Запомнил', memory_rewrite: 'Память', browser_open: 'Браузер', browser_snapshot: 'Скриншот', browser_click: 'Клик', browser_type: 'Ввод текста', browser_press: 'Клавиша', browser_scroll: 'Прокрутка', browser_back: 'Назад', browser_eval: 'Скрипт в браузере', browser_upload: 'Загрузка файла', browser_close: 'Браузер закрыт', install_packages: 'Установка', phone_find: 'Поиск на телефоне', bash: 'Терминал', read_file: 'Чтение', write_file: 'Запись файла', edit_file: 'Правка', list_dir: 'Папка', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос', web_search: 'Поиск', download_file: 'Скачивание', view_image: 'Изображение', send_file: 'Отправка файла', phone_take_photo: 'Фото', phone_list_files: 'Телефон', phone_read_file: 'Телефон: чтение', phone_write_file: 'Телефон: запись', phone_to_server: 'Телефон → сервер', server_to_phone: 'Сервер → телефон', phone_delete: 'Телефон: удаление', gdrive_list: 'Google Диск', gdrive_search: 'Поиск в Диске', gdrive_download: 'Диск → сервер', gdrive_upload: 'Сервер → Диск', gdrive_mkdir: 'Диск: папка', gdrive_delete: 'Диск: удаление' };
+  const TOOL_ICONS = { chats_list: 'chat', chat_read: 'chat', chat_search: 'search', agents_run: 'users', schedule_create: 'clock', schedule_list: 'clock', schedule_delete: 'clock', notify_user: 'bell', publish_site: 'globe', unpublish_site: 'globe', sites_list: 'globe', server_status: 'activity', share_file: 'qr', generate_image: 'image', generate_video: 'image', telegram_post: 'send', github_clone: 'github', github_pr: 'github', ollama_pull: 'cpu', backup_now: 'cloud', android_start: 'phone', android_screenshot: 'phone', android_tap: 'phone', android_type: 'phone', android_key: 'phone', android_swipe: 'phone', android_install: 'phone', android_open: 'phone', android_shell: 'phone', android_stop: 'phone', ask_user: 'key', secrets_list: 'key', write_env_file: 'key', service_create: 'server', service_control: 'server', service_list: 'server', skill_install: 'download', skill_create: 'spark', skill_read: 'filetext', skill_list: 'list', skill_delete: 'trash', memory_save: 'spark', memory_rewrite: 'spark', browser_open: 'globe', browser_snapshot: 'image', browser_click: 'globe', browser_type: 'pencil', browser_press: 'globe', browser_scroll: 'globe', browser_back: 'back', browser_eval: 'terminal', browser_upload: 'upload', browser_close: 'x', install_packages: 'package', phone_find: 'search', bash: 'terminal', read_file: 'filetext', write_file: 'pencil', edit_file: 'pencil', list_dir: 'folder', delete_path: 'trash', move_path: 'move', web_fetch: 'globe', web_search: 'search', download_file: 'download', view_image: 'image', send_file: 'package', phone_take_photo: 'camera', phone_list_files: 'phone', phone_read_file: 'phone', phone_write_file: 'phone', phone_to_server: 'upload', server_to_phone: 'download', phone_delete: 'trash', gdrive_list: 'drive', gdrive_search: 'drive', gdrive_download: 'download', gdrive_upload: 'upload', gdrive_mkdir: 'drive', gdrive_delete: 'trash', Bash: 'terminal', Read: 'filetext', Write: 'pencil', Edit: 'pencil', MultiEdit: 'pencil', Glob: 'folder', Grep: 'search', LS: 'folder', WebFetch: 'globe', WebSearch: 'search', TodoWrite: 'list', Task: 'cpu' };
+  const TOOL_NAMES = { chats_list: 'Список чатов', chat_read: 'Чтение старого чата', chat_search: 'Поиск по чатам', agents_run: 'Команда агентов', schedule_create: 'Расписание', schedule_list: 'Расписание', schedule_delete: 'Расписание', notify_user: 'Уведомление', publish_site: 'Публикация сайта', unpublish_site: 'Снятие сайта', sites_list: 'Сайты', server_status: 'Состояние сервера', share_file: 'QR-ссылка', generate_image: 'Картинка', generate_video: 'Видео', telegram_post: 'Пост в Telegram', github_clone: 'GitHub', github_pr: 'Pull request', ollama_pull: 'Ollama', backup_now: 'Резервная копия', android_start: 'Android', android_screenshot: 'Android: экран', android_tap: 'Android: нажатие', android_type: 'Android: ввод', android_key: 'Android: клавиша', android_swipe: 'Android: свайп', android_install: 'Android: установка APK', android_open: 'Android: открыть', android_shell: 'Android: shell', android_stop: 'Android', ask_user: 'Запрос данных', secrets_list: 'Секреты', write_env_file: '.env файл', service_create: 'Запуск службы', service_control: 'Служба', service_list: 'Службы', skill_install: 'Установка скилла', skill_create: 'Новый скилл', skill_read: 'Скилл', skill_list: 'Скиллы', skill_delete: 'Удаление скилла', memory_save: 'Запомнил', memory_rewrite: 'Память', browser_open: 'Браузер', browser_snapshot: 'Скриншот', browser_click: 'Клик', browser_type: 'Ввод текста', browser_press: 'Клавиша', browser_scroll: 'Прокрутка', browser_back: 'Назад', browser_eval: 'Скрипт в браузере', browser_upload: 'Загрузка файла', browser_close: 'Браузер закрыт', install_packages: 'Установка', phone_find: 'Поиск на телефоне', bash: 'Терминал', read_file: 'Чтение', write_file: 'Запись файла', edit_file: 'Правка', list_dir: 'Папка', delete_path: 'Удаление', move_path: 'Перемещение', web_fetch: 'Запрос', web_search: 'Поиск', download_file: 'Скачивание', view_image: 'Изображение', send_file: 'Отправка файла', phone_take_photo: 'Фото', phone_list_files: 'Телефон', phone_read_file: 'Телефон: чтение', phone_write_file: 'Телефон: запись', phone_to_server: 'Телефон → сервер', server_to_phone: 'Сервер → телефон', phone_delete: 'Телефон: удаление', gdrive_list: 'Google Диск', gdrive_search: 'Поиск в Диске', gdrive_download: 'Диск → сервер', gdrive_upload: 'Сервер → Диск', gdrive_mkdir: 'Диск: папка', gdrive_delete: 'Диск: удаление' };
   function toolSummary(tc) {
     const a = tc.args || {};
     if (Array.isArray(a.packages)) return a.packages.join(' ');
     if (tc.name === 'ask_user') return a.title || '';
+    if (tc.name === 'agents_run' && Array.isArray(a.agents)) return a.agents.map((x) => x.role).join(', ');
+    if (tc.name === 'chat_read') return a.chat_id || '';
     if (a.element != null && !a.text) return '#' + a.element;
     return a.command || a.file_path || a.path || a.url || a.query || a.pattern || a.phone_path || a.server_path || a.description || (a.from ? a.from + ' → ' + a.to : '') || JSON.stringify(a).slice(0, 120);
   }
 
   // animate only messages that appear for the first time
   const anim = (m) => (S.seen.has(m.id) ? '' : 'anim');
-  function renderMsgs(forceBottom) {
-    const box = $('#msgs');
-    if (!box || !S.chat) return;
-    const stick = forceBottom || nearBottom();
-    const results = {};
-    for (const m of S.chat.messages) if (m.role === 'tool') results[m.toolCallId] = m;
+  // Incremental rendering: every message becomes a block keyed by id; unchanged blocks are kept
+  // as-is (no image reloads, no flicker, open cards stay open).
+  function msgHtml(m, results) {
+    if (m.role === 'user') return `<div class="msg user"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}${m.midRun ? '<div class="midrun">↪ отправлено во время работы</div>' : ''}</div></div>`;
+    if (m.role === 'event') return `<div class="msg event ${m.isError ? 'error' : ''}"><span>${esc(m.content)}</span></div>`;
+    if (m.role !== 'assistant') return '';
+    let html = `<div class="msg assistant">`;
+    if (m.reasoning) html += `<details class="think"><summary>${ic('spark', 'sm')} Размышления</summary><div class="tt">${esc(m.reasoning)}</div></details>`;
+    if (m.content) html += `<div class="md">${md(m.content)}</div>`;
+    for (const tc of m.toolCalls || []) {
+      const r = results[tc.id];
+      const live = S.run.toolOutputs[tc.id];
+      const running = !r && S.run.running;
+      const open = S.open.has(tc.id);
+      const st = r ? (r.isError ? `<span style="color:var(--err)">${ic('x')}</span>` : `<span class="ok">${ic('check')}</span>`) : running ? '<span class="spin"></span>' : '<span class="muted">—</span>';
+      html += `<div class="tool ${open ? 'open' : ''} ${r && r.isError ? 'bad' : ''} ${running ? 'live' : ''}" data-tc="${esc(tc.id)}">
+        <div class="th"><span class="ti">${ic(TOOL_ICONS[tc.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[tc.name] || tc.name)}</span><span class="sm">${esc(toolSummary(tc))}</span><span class="st">${st}</span><span class="chev">${ic('down', 'sm')}</span></div>
+        <div class="tb"><div><div class="inner"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
+        ${r ? `<div class="muted">Результат</div><pre>${esc(r.content)}</pre>` : `<div class="muted">Вывод</div><pre id="out-${esc(tc.id)}">${esc(live || '')}</pre>`}</div></div></div></div>`;
+      if (r && r.images && r.images.length) html += `<div class="imgs">${r.images.map((i) => `<img src="${mediaUrl(i)}" data-full="${i}">`).join('')}</div>`;
+      if (r && r.file) html += `<div class="filecard"><span class="fi">${ic(/\.apk$/i.test(r.file.name) ? 'phone' : 'package')}</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="icon" data-qr="${esc(r.file.path)}" data-tok="${esc(r.file.share || '')}" title="QR для другого телефона">${ic('qr')}</button><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">${ic('download', 'sm')} Скачать</button></div>`;
+      if (r && (r.diff || r.before)) html += `<div class="toolacts">${r.diff ? `<button class="btn small" data-diff="${esc(r.diff)}">${ic('diff', 'sm')} Было → стало</button>` : ''}${r.before ? `<button class="btn small" data-rb="${esc(r.before)}">${ic('undo', 'sm')} Откатить сюда</button>` : ''}</div>`;
+    }
+    return html + '</div>';
+  }
+  function agentsHtml() {
+    const ag = S.run.agents;
+    if (!ag || !ag.length) return '';
+    const run = ag.filter((a) => a.state === 'running').length, done = ag.filter((a) => a.state === 'done').length, err = ag.filter((a) => a.state === 'error').length;
+    return `<div class="agents"><div class="ah">${ic('users', 'sm')} <b>Агенты: ${ag.length}</b><span class="muted">· работают ${run} · готово ${done}${err ? ' · ошибок ' + err : ''}</span></div>` +
+      ag.map((a) => `<button class="arow" data-open="${esc(a.id)}"><span class="dot ${a.state === 'running' ? 'busy' : a.state === 'done' ? 'on' : ''}" style="${a.state === 'error' ? 'background:var(--err)' : ''}"></span><span class="grow"><b>${esc(a.role)}</b> <span class="muted">${esc(a.model)}</span><small>${esc(a.status || '')}</small></span>${ic('back', 'sm flip')}</button>`).join('') + '</div>';
+  }
+  function liveHtml() {
     let html = '';
-    if (!S.chat.messages.length && !S.run.running) {
-      html = `<div class="empty"><div class="big">${ic(S.chat.serverAccess === 'full' ? 'server' : 'chat', 'xl')}</div>${S.chat.serverAccess === 'full' ? `<p>Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code>${S.chat.phoneAccess && S.chat.phoneAccess.full ? '<br>+ вся память телефона' : ''}</p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Распакуй архив и собери проект», «Найди на телефоне все APK и скопируй на сервер».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`;
+    if (S.run.thinking) html += `<details class="think live" open><summary>${ic('spark', 'sm')} Размышляет…</summary><div class="tt" id="thinktext">${esc(S.run.thinking.slice(-6000))}</div></details>`;
+    html += `<div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>`;
+    for (const [id, d] of Object.entries(S.run.drafts || {})) {
+      html += `<div class="tool open live"><div class="th"><span class="ti">${ic(TOOL_ICONS[d.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[d.name] || d.name)}</span><span class="sm">готовит…</span><span class="st"><span class="spin"></span></span></div>
+        <div class="tb"><div><div class="inner"><pre id="draft-${esc(id)}">${esc(draftText(d.args))}</pre></div></div></div></div>`;
     }
-    for (const m of S.chat.messages) {
-      if (m.role === 'user') {
-        html += `<div class="msg user ${anim(m)}"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}</div></div>`;
-      } else if (m.role === 'assistant') {
-        html += `<div class="msg assistant ${anim(m)}">`;
-        if (m.reasoning) html += `<details class="think"><summary>${ic('spark', 'sm')} Размышления</summary><div class="tt">${esc(m.reasoning)}</div></details>`;
-        if (m.content) html += `<div class="md">${md(m.content)}</div>`;
-        for (const tc of m.toolCalls || []) {
-          const r = results[tc.id];
-          const live = S.run.toolOutputs[tc.id];
-          const running = !r && S.run.running;
-          const open = S.open.has(tc.id);
-          const st = r ? (r.isError ? `<span style="color:var(--err)">${ic('x')}</span>` : `<span class="ok">${ic('check')}</span>`) : running ? '<span class="spin"></span>' : '<span class="muted">—</span>';
-          html += `<div class="tool ${open ? 'open' : ''} ${r && r.isError ? 'bad' : ''} ${running ? 'live' : ''}" data-tc="${esc(tc.id)}">
-            <div class="th"><span class="ti">${ic(TOOL_ICONS[tc.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[tc.name] || tc.name)}</span><span class="sm">${esc(toolSummary(tc))}</span><span class="st">${st}</span><span class="chev">${ic('down', 'sm')}</span></div>
-            <div class="tb"><div><div class="inner"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
-            ${r ? `<div class="muted">Результат</div><pre>${esc(r.content)}</pre>` : `<div class="muted">Вывод</div><pre id="out-${esc(tc.id)}">${esc(live || '')}</pre>`}</div></div></div></div>`;
-          if (r && r.images && r.images.length) html += `<div class="imgs">${r.images.map((i) => `<img src="${mediaUrl(i)}" data-full="${i}">`).join('')}</div>`;
-          if (r && r.file) html += `<div class="filecard"><span class="fi">${ic(/\.apk$/i.test(r.file.name) ? 'phone' : 'package')}</span><div class="grow"><b>${esc(r.file.name)}</b><div class="muted">${fmtSize(r.file.size)}</div></div><button class="icon" data-qr="${esc(r.file.path)}" data-tok="${esc(r.file.share || '')}" title="QR для другого телефона">${ic('qr')}</button><button class="btn small primary" data-dl="${esc(r.file.path)}" data-name="${esc(r.file.name)}">${ic('download', 'sm')} Скачать</button></div>`;
-          if (r && (r.diff || r.before)) html += `<div class="toolacts">${r.diff ? `<button class="btn small" data-diff="${esc(r.diff)}">${ic('diff', 'sm')} Было → стало</button>` : ''}${r.before ? `<button class="btn small" data-rb="${esc(r.before)}">${ic('undo', 'sm')} Откатить сюда</button>` : ''}</div>`;
-        }
-        html += '</div>';
-      } else if (m.role === 'event') {
-        html += `<div class="msg event ${m.isError ? 'error' : ''} ${anim(m)}"><span>${esc(m.content)}</span></div>`;
-      }
-    }
-    if (S.run.running) {
-      html += `<div class="msg assistant">`;
-      if (S.run.thinking) html += `<details class="think live" open><summary>${ic('spark', 'sm')} Размышляет…</summary><div class="tt" id="thinktext">${esc(S.run.thinking.slice(-6000))}</div></details>`;
-      html += `<div class="md ${S.run.partial ? 'cursor' : ''}" id="partial">${S.run.partial ? md(S.run.partial) : ''}</div>`;
-      for (const [id, d] of Object.entries(S.run.drafts || {})) {
-        html += `<div class="tool open live"><div class="th"><span class="ti">${ic(TOOL_ICONS[d.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[d.name] || d.name)}</span><span class="sm">готовит…</span><span class="st"><span class="spin"></span></span></div>
-          <div class="tb"><div><div class="inner"><pre id="draft-${esc(id)}">${esc(draftText(d.args))}</pre></div></div></div></div>`;
-      }
-      html += `<div class="statusline" id="sline"><span class="thinking"><i></i><i></i><i></i></span><span id="stext">${esc(S.run.status || 'ИИ работает…')}</span></div></div>`;
-    }
-    box.innerHTML = html;
-    for (const m of S.chat.messages) S.seen.add(m.id);
-    box.querySelectorAll('.tool .th').forEach((el) => el.onclick = () => {
-      const card = el.parentElement, id = card.dataset.tc;
+    html += `<div id="agentsPanel">${agentsHtml()}</div>`;
+    html += `<div class="statusline" id="sline"><span class="thinking"><i></i><i></i><i></i></span><span id="stext">${esc(S.run.status || 'ИИ работает…')}</span></div>`;
+    return `<div class="msg assistant live">${html}</div>`;
+  }
+  function bindBlock(el) {
+    el.querySelectorAll('.tool .th').forEach((th) => th.onclick = () => {
+      const card = th.parentElement, id = card.dataset.tc;
+      if (!id) return;
       if (S.open.has(id)) S.open.delete(id); else S.open.add(id);
       card.classList.toggle('open');
     });
-    box.querySelectorAll('[data-dl]').forEach((b) => b.onclick = () => downloadFile(b.dataset.dl, b.dataset.name));
-    const sl = $('#sline'); if (sl) sl.onclick = () => { if (S.run.form) showFormSheet(S.run.form); };
-    box.querySelectorAll('[data-diff]').forEach((b) => b.onclick = () => diffPage(b.dataset.diff));
-    box.querySelectorAll('[data-qr]').forEach((b) => b.onclick = () => qrSheet(b.dataset.qr, b.dataset.tok));
-    box.querySelectorAll('[data-rb]').forEach((b) => b.onclick = async () => {
+    el.querySelectorAll('[data-dl]').forEach((b) => b.onclick = () => downloadFile(b.dataset.dl, b.dataset.name));
+    el.querySelectorAll('[data-diff]').forEach((b) => b.onclick = () => diffPage(b.dataset.diff));
+    el.querySelectorAll('[data-qr]').forEach((b) => b.onclick = () => qrSheet(b.dataset.qr, b.dataset.tok));
+    el.querySelectorAll('[data-open]').forEach((b) => b.onclick = () => loadChat(b.dataset.open));
+    el.querySelectorAll('[data-rb]').forEach((b) => b.onclick = async () => {
       if (S.run.running) return toast('Сначала остановите ИИ');
       if (!confirm('Вернуть все файлы проекта к состоянию ДО этого действия? Текущее состояние тоже сохранится в истории.')) return;
       try { await api('/chats/' + S.chat.id + '/rollback', { body: { commit: b.dataset.rb } }); toast('Файлы откатены'); } catch (e) { toast(e.message); }
     });
-    box.querySelectorAll('img').forEach((im) => im.onclick = () => openExternal(im.src));
+    el.querySelectorAll('img').forEach((im) => im.onclick = () => openExternal(im.src));
+    const sl = el.querySelector('#sline'); if (sl) sl.onclick = () => { if (S.run.form) showFormSheet(S.run.form); };
+  }
+  function renderMsgs(forceBottom) {
+    const box = $('#msgs');
+    if (!box || !S.chat) return;
+    const stick = forceBottom || nearBottom();
+    if (box.dataset.chat !== S.chat.id) { box.innerHTML = ''; box.dataset.chat = S.chat.id; }
+    const results = {};
+    for (const m of S.chat.messages) if (m.role === 'tool') results[m.toolCallId] = m;
+    const want = [];
+    if (!S.chat.messages.length && !S.run.running) {
+      want.push(['empty', `<div class="empty"><div class="big">${ic(S.chat.serverAccess === 'full' ? 'server' : 'chat', 'xl')}</div>${S.chat.serverAccess === 'full' ? `<p>Полный доступ к серверу (root), папка: <code>${esc(S.chat.serverDir || '/root')}</code>${S.chat.phoneAccess && S.chat.phoneAccess.full ? '<br>+ вся память телефона' : ''}</p><p class="muted">Например: «Покажи, что занимает место на диске и почисти», «Почини apt», «Установи docker и подними postgres», «Найди на телефоне все APK и скопируй на сервер».</p>` : `<p>Папка проекта: <code>${esc(S.chat.workspace)}</code></p><p class="muted">Напишите задачу. Например: «Создай Android-приложение с кнопкой и собери APK» или «Сделай игру на Godot и экспортируй в APK». Нужные программы ИИ установит сам.</p>`}</div>`]);
+    }
+    for (const m of S.chat.messages) { const h2 = msgHtml(m, results); if (h2) want.push([m.id, h2]); }
+    if (S.run.running) want.push(['__live', null]);
+    const existing = new Map();
+    for (const el of [...box.children]) existing.set(el.dataset.k, el);
+    let prev = null;
+    for (const [k, html] of want) {
+      let el = existing.get(k);
+      if (k === '__live') {
+        if (!el) { el = document.createElement('div'); el.dataset.k = k; el.innerHTML = liveHtml(); bindBlock(el); }
+        else if (!el.querySelector('#stext')) { el.innerHTML = liveHtml(); bindBlock(el); }
+      } else if (!el || el._html !== html) {
+        const fresh = document.createElement('div');
+        fresh.dataset.k = k; fresh.innerHTML = html; fresh._html = html;
+        if (!el && !S.seen.has(k) && k !== 'empty') fresh.classList.add('anim');
+        bindBlock(fresh);
+        if (el) el.replaceWith(fresh);
+        el = fresh;
+      }
+      existing.delete(k);
+      if (prev ? prev.nextSibling !== el : box.firstChild !== el) box.insertBefore(el, prev ? prev.nextSibling : box.firstChild);
+      prev = el;
+    }
+    for (const el of existing.values()) el.remove();
+    for (const m of S.chat.messages) S.seen.add(m.id);
+    if (stick) toBottom();
+  }
+  // full re-render of the live block (status/thinking/drafts/agents)
+  function renderLive() {
+    const el = document.querySelector('#msgs > [data-k="__live"]');
+    if (!el) return scheduleRender();
+    const stick = nearBottom();
+    el.innerHTML = liveHtml(); bindBlock(el);
     if (stick) toBottom();
   }
 
@@ -445,20 +499,28 @@
     const c = $('#composer');
     if (!c) return;
     if (!S.chat) { c.innerHTML = ''; return; }
-    const draft = $('#inp') ? $('#inp').value : (localStorage.getItem('kala_draft_' + S.chat.id) || '');
+    const same = c.dataset.chat === S.chat.id;
+    const draft = same && $('#inp') ? $('#inp').value : (localStorage.getItem('kala_draft_' + S.chat.id) || '');
+    const hadFocus = same && document.activeElement && document.activeElement.id === 'inp';
+    c.dataset.chat = S.chat.id;
     c.innerHTML = `<div class="pending" id="pend"></div><div class="box">
       <button class="icon" id="att" title="Прикрепить">${ic('clip')}</button>
       ${A ? `<button class="icon" id="cam" title="Фото">${ic('camera')}</button>` : ''}
       <button class="icon" id="mic" title="Голосом">${ic('mic')}</button>
       <textarea id="inp" rows="1" placeholder="Опишите задачу…"></textarea>
-      <button class="send ${S.run.running ? 'stop' : ''}" id="send">${S.run.running ? ic('stop') : ic('send')}</button></div>
+      ${S.run.running ? `<button class="send stop" id="stopb" title="Остановить">${ic('stop')}</button>` : ''}
+      <button class="send" id="send" title="${S.run.running ? 'Дописать ИИ во время работы' : 'Отправить'}">${ic('send')}</button></div>
       <input type="file" id="fileinp" multiple hidden>`;
     const inp = $('#inp');
     inp.value = draft;
     const grow = () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 160) + 'px'; };
     inp.oninput = () => { grow(); localStorage.setItem('kala_draft_' + S.chat.id, inp.value); };
     grow();
-    $('#send').onclick = () => S.run.running ? stopRun() : send();
+    $('#send').onclick = () => send();
+    if ($('#stopb')) $('#stopb').onclick = () => stopRun();
+    inp.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } };
+    inp.placeholder = S.run.running ? 'Дописать ИИ — он учтёт на следующем шаге…' : 'Опишите задачу…';
+    if (hadFocus) inp.focus();
     $('#att').onclick = () => $('#fileinp').click();
     $('#mic').onclick = toggleVoice;
     $('#fileinp').onchange = (e) => { for (const f of e.target.files) attachFile(f); e.target.value = ''; };
@@ -662,6 +724,7 @@
     sheet(`<h3>Новый чат</h3>
       <div class="muted">Модель</div><button class="btn block" id="msel" style="justify-content:space-between"></button>
       ${maxAccessHtml()}
+      <div id="teamsel"></div>
       ${serverAccessHtml(null)}
       <div class="muted" style="margin-top:12px">Папка проекта на сервере</div>
       <input class="field" id="proj" list="projs" placeholder="Новая папка (например my-game) или выберите">
@@ -688,10 +751,12 @@
       const getPA = bindPhoneAccess(el);
       const getSA = bindServerAccess(el);
       bindMaxAccess(el);
+      let teamId = null;
+      api('/teams').then((d) => { if (!d.teams.length) return; const box = $('#teamsel', el); box.innerHTML = `<div class="muted" style="margin-top:12px">Команда агентов (необязательно)</div><select class="field" id="tsel"><option value="">— без команды —</option>${d.teams.map((t) => `<option value="${t.id}">${esc(t.name)} (${t.members.length})</option>`).join('')}</select>`; $('#tsel', box).onchange = (e) => { teamId = e.target.value || null; }; }).catch(() => {});
       $('#create', el).onclick = async () => {
         if (!sel) return toast('Выберите модель');
         try {
-          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: sharedPath ? '' : $('#proj', el).value, sharedPath, phoneAccess: getPA(), ...getSA() } });
+          const r = await api('/chats', { body: { provider: sel.p, model: sel.m, project: sharedPath ? '' : $('#proj', el).value, sharedPath, teamId, phoneAccess: getPA(), ...getSA() } });
           localStorage.setItem('kala_last_model', JSON.stringify(sel));
           close(); await loadChats(); loadChat(r.chat.id);
           setTimeout(() => $('#inp') && $('#inp').focus(), 100);
@@ -1005,6 +1070,7 @@
   // ---------------- tools grid ----------------
   function toolsPage() {
     const tiles = [
+      ['users', 'Команды агентов', 'Много моделей параллельно', teamsPage],
       ['terminal', 'Терминал', 'SSH-консоль сервера', termPage, true],
       ['activity', 'Сервер', 'CPU, память, диск, тревоги', monitorPage, true],
       ['phone', 'Виртуальный Android', 'Телефон для ИИ на сервере', androidPage, true],
@@ -1012,7 +1078,7 @@
       ['coins', 'Расходы', 'Токены и деньги', usagePage],
       ['key', 'Секреты (.env)', 'Токены и ключи', secretsPage],
       ['spark', 'Скиллы и память', 'Что ИИ знает и умеет', skillsPage],
-      ['users', 'Общие проекты', 'Пригласить друга', sharePage],
+      ['folder', 'Общие проекты', 'Пригласить друга', sharePage],
       ['globe', 'Сайты', 'Опубликованные поддомены', sitesPage],
       ['cpu', 'Локальные модели', 'Ollama на сервере', ollamaPage, true],
       ['cloud', 'Резервные копии', 'В Google Диск', backupPage],
@@ -1115,6 +1181,82 @@
       if (st.running) setAndroidView(true);
       const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); setAndroidView(false); } });
       obs.observe(document.body, { childList: true });
+    });
+  }
+
+  // ---------------- agent teams ----------------
+  function teamsPage() {
+    page('Команды агентов', (body) => {
+      const draw = async () => {
+        let d; try { d = await api('/teams'); } catch (e) { body.innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+        body.innerHTML = `<p class="muted" style="margin-top:0">Соберите команду из разных моделей и API: например Claude пишет код, GPT пишет тесты, Gemini проверяет и собирает. Агенты работают одновременно, каждый в своей роли — так быстрее и они не путаются.</p>
+          <button class="btn primary block" id="tnew">${ic('plus', 'sm')} Новая команда</button><div id="tl" style="margin-top:10px"></div>`;
+        const list = $('#tl', body);
+        if (!d.teams.length) list.innerHTML = '<div class="muted">Команд пока нет.</div>';
+        for (const t of d.teams) {
+          const el = h(`<div class="prov"><h4><span class="pi">${ic('users', 'sm')}</span>${esc(t.name)}<span class="badge" style="color:var(--fg2);border-color:var(--line);background:none">${t.members.length} агентов</span></h4>
+            ${t.members.map((m) => `<div class="fsrow" style="cursor:default;padding:6px 2px"><span class="n"><b>${esc(m.role)}</b> <span class="muted">${esc(m.model || '')}</span><small class="muted" style="display:block">${esc(m.prompt.slice(0, 120))}</small></span></div>`).join('')}
+            <div class="row wrap" style="margin-top:8px"><button class="btn small primary" data-a="run">${ic('send', 'sm')} Дать задачу</button><button class="btn small" data-a="edit">${ic('pencil', 'sm')} Изменить</button><button class="btn small danger" data-a="del">Удалить</button></div></div>`);
+          $('[data-a=run]', el).onclick = () => teamRunSheet(t);
+          $('[data-a=edit]', el).onclick = () => teamEditor(t, draw);
+          $('[data-a=del]', el).onclick = async () => { if (confirm('Удалить команду?')) { await api('/teams/' + t.id, { method: 'DELETE' }); draw(); } };
+          list.appendChild(el);
+        }
+        $('#tnew', body).onclick = () => teamEditor(null, draw);
+      };
+      draw();
+    });
+  }
+  function teamEditor(team, onSaved) {
+    const t = team ? JSON.parse(JSON.stringify(team)) : { name: 'Моя команда', members: [
+      { role: 'Программист', model: '', provider: '', prompt: 'Пишет основной код проекта.', folder: 'shared' },
+      { role: 'Тестировщик', model: '', provider: '', prompt: 'Пишет и запускает тесты, проверяет сборку, сообщает об ошибках.', folder: 'shared' }] };
+    page(team ? 'Изменить команду' : 'Новая команда', (body, close) => {
+      const draw = () => {
+        body.innerHTML = `<div class="label" style="margin-top:0">Название</div><input class="field" id="tname" value="${esc(t.name)}">
+          <div class="label">Координатор (раздаёт задачи и проверяет)</div>
+          <button class="btn block" id="tcoord" style="justify-content:space-between">${ic('cpu', 'sm')} <span class="grow" style="text-align:left">${esc(t.coordinator && t.coordinator.model || 'как у первого агента')}</span>${ic('down', 'sm')}</button>
+          <div class="label">Агенты</div><div id="tm"></div>
+          <button class="btn block" id="tadd">${ic('plus', 'sm')} Добавить агента</button>
+          <button class="btn primary block" id="tsave" style="margin-top:14px">Сохранить команду</button>`;
+        const box = $('#tm', body);
+        t.members.forEach((m, i) => {
+          const el = h(`<div class="mcard"><div class="row"><input class="field grow" data-f="role" value="${esc(m.role)}" placeholder="Роль (Программист, Дизайнер…)" style="margin:0"><button class="icon" data-x>${ic('trash', 'sm')}</button></div>
+            <button class="btn block" data-f="model" style="justify-content:space-between">${ic('cpu', 'sm')} <span class="grow" style="text-align:left">${esc(m.model || 'выбрать модель / API')} <span class="muted">${esc(m.provider || '')}</span></span>${ic('down', 'sm')}</button>
+            <textarea class="field" data-f="prompt" rows="3" placeholder="Инструкции: что делает этот агент, на чём специализируется">${esc(m.prompt)}</textarea>
+            <label class="sw"><input type="checkbox" data-f="folder" ${m.folder === 'own' ? 'checked' : ''}> Отдельная подпапка (не трогает чужие файлы)</label></div>`);
+          $('[data-f=role]', el).oninput = (e) => { m.role = e.target.value; };
+          $('[data-f=prompt]', el).oninput = (e) => { m.prompt = e.target.value; };
+          $('[data-f=folder]', el).onchange = (e) => { m.folder = e.target.checked ? 'own' : 'shared'; };
+          $('[data-f=model]', el).onclick = () => pickModel(m.provider, m.model, (p, md) => { m.provider = p; m.model = md; draw(); });
+          $('[data-x]', el).onclick = () => { t.members.splice(i, 1); draw(); };
+          box.appendChild(el);
+        });
+        $('#tname', body).oninput = (e) => { t.name = e.target.value; };
+        $('#tcoord', body).onclick = () => pickModel(t.coordinator && t.coordinator.provider, t.coordinator && t.coordinator.model, (p, md) => { t.coordinator = { provider: p, model: md }; draw(); });
+        $('#tadd', body).onclick = () => { t.members.push({ role: 'Агент ' + (t.members.length + 1), model: '', provider: '', prompt: '', folder: 'shared' }); draw(); };
+        $('#tsave', body).onclick = async () => {
+          if (t.members.some((m) => !m.model)) return toast('Выберите модель для каждого агента');
+          try { await api('/teams', { body: t }); toast('Команда сохранена'); close(); onSaved && onSaved(); } catch (e) { toast(e.message); }
+        };
+      };
+      draw();
+    });
+  }
+  function teamRunSheet(t) {
+    sheet(`<h3>${ic('users')} ${esc(t.name)}: задача</h3>
+      <textarea class="field" id="ttask" rows="5" placeholder="Например: сделай Telegram-бота-магазин с админкой, тестами и собери Docker-образ"></textarea>
+      <input class="field" id="tproj" placeholder="Папка проекта (новая или существующая)">
+      <label class="opt"><input type="radio" name="tmode" value="coordinator" checked><span class="oi">${ic('cpu', 'sm')}</span><span><b>Координатор делит задачу</b><small>Сам раздаёт части по ролям, потом проверяет и собирает</small></span></label>
+      <label class="opt"><input type="radio" name="tmode" value="direct"><span class="oi">${ic('users', 'sm')}</span><span><b>Все сразу</b><small>Каждый агент получает задачу и делает свою часть по роли</small></span></label>
+      <button class="btn primary block" id="trun">${ic('send', 'sm')} Запустить команду</button>`, (el, close) => {
+      $('#trun', el).onclick = async () => {
+        const task = $('#ttask', el).value.trim(); if (!task) return toast('Опишите задачу');
+        try {
+          const r = await api('/teams/' + t.id + '/run', { body: { task, project: $('#tproj', el).value, mode: el.querySelector('[name=tmode]:checked').value } });
+          close(); document.querySelectorAll('.page').forEach((p) => p.remove()); await loadChats(); loadChat(r.chat.id);
+        } catch (e) { toast(e.message); }
+      };
     });
   }
 
@@ -1304,7 +1446,8 @@
 
   async function browserPage() {
     const old = $('#bmini'); if (old) old.remove();
-    try { await api('/browser/open', { body: {} }); } catch (e) { toast(e.message); }
+    let openErr = null;
+    const opening = api('/browser/open', { body: {} }).catch((e) => { openErr = e.message; const w = $('.bwait'); if (w) w.innerHTML = `<div class="err" style="padding:16px;text-align:center">${esc(e.message)}</div>`; });
     page('Браузер ИИ', (body, close, extra) => {
       body.classList.add('bbody');
       extra.innerHTML = `<button class="icon" data-mode title="Телефон / компьютер">${ic('phone')}</button><button class="icon" data-off title="Закрыть браузер">${ic('x')}</button>`;
