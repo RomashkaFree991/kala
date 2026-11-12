@@ -91,7 +91,8 @@ function htmlToText(html) {
 const IMG_MIME = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' };
 
 function runBash(ctx, args) {
-  const command = String(args.command || '');
+  // heavy jobs of the AI should be killed first when memory runs out — never the Kala server itself
+  const command = 'echo 900 > /proc/self/oom_score_adj 2>/dev/null; ' + String(args.command || '');
   if (args.background) {
     const logDir = path.join(ctx.logDir || ctx.cwd, '.kala-logs');
     fs.mkdirSync(logDir, { recursive: true });

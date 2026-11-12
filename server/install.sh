@@ -121,6 +121,8 @@ Restart=always
 RestartSec=3
 KillMode=process
 LimitNOFILE=65535
+# under memory pressure the kernel kills the AI's heavy jobs, not Kala itself
+OOMScoreAdjust=-800
 
 [Install]
 WantedBy=multi-user.target

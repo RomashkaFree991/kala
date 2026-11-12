@@ -1,4 +1,7 @@
 const http = require('http');
+// never let one bad promise / exception take the whole server (and every running AI) down
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e && e.stack || e));
+process.on('uncaughtException', (e) => console.error('uncaughtException:', e && e.stack || e));
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');

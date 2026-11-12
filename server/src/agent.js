@@ -545,7 +545,10 @@ async function startRun(user, chatId, text, images, opts = {}) {
   if (!chat.title || chat.title === 'Новый чат') {
     chat.title = String(text).replace(/\s+/g, ' ').slice(0, 60) || 'Новый чат';
   }
-  addMessage(uid, chat, { role: 'user', content: String(text || ''), images: images && images.length ? images : undefined });
+  addMessage(uid, chat, { role: 'user', content: String(text || ''), images: images && images.length ? images : undefined, auto: opts.auto || undefined });
+  // remember that a run is active: if the server restarts, it resumes this chat
+  chat.activeRun = { since: Date.now(), resumes: opts.resume ? (chat.activeRun && chat.activeRun.resumes || 0) + 1 : 0 };
+  store.saveChat(uid, chat);
   const run = { abort: new AbortController(), partial: '', toolOutputs: {}, cliExtras: {}, chat, status: 'Запуск…', thinking: '', drafts: {}, form: null, newInput: false, agents: null };
   if (opts.parentHook) run.parentHook = opts.parentHook;
   runs.set(k, run);
@@ -596,6 +599,8 @@ async function startRun(user, chatId, text, images, opts = {}) {
       if (run.partial) addMessage(uid, chat, { role: 'assistant', content: run.partial, toolCalls: [], model: chat.model });
       if (run.abort.signal.aborted) addMessage(uid, chat, { role: 'event', content: '⏹ Остановлено' });
       runs.delete(k);
+      delete chat.activeRun;
+      try { store.saveChat(uid, chat); } catch {}
       emit(uid, chatId, { t: 'run_end', error });
       broadcast(uid, { t: 'chats_changed' });
       if (!chat.parentId && !run.abort.signal.aborted && opts.notify !== false) {
@@ -625,5 +630,35 @@ function liveSummary(uid) {
   for (const [k, r] of runs) if (k.startsWith(uid + ':')) list.push({ title: r.chat.title, model: r.chat.model, child: !!r.chat.parentId, status: r.status || '' });
   return list;
 }
+
+// After a restart (crash, out-of-memory kill, update) continue the chats that were working.
+function oomHint() {
+  try {
+    const out = require('child_process').execFileSync('sudo', ['-n', 'journalctl', '-k', '--since', '-30min', '--no-pager'], { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const m = out.match(/Killed process \d+ \(([^)]+)\)[^\n]*/i);
+    return m ? `Система убила процесс «${m[1]}» из-за нехватки памяти. ` : '';
+  } catch { return ''; }
+}
+function resumeInterrupted() {
+  const hint = oomHint();
+  for (const u of store.db.users) {
+    for (const meta of store.listChats(u.id)) {
+      const chat = store.getChat(u.id, meta.id);
+      if (!chat || !chat.activeRun) continue;
+      const ar = chat.activeRun;
+      if (chat.parentId || Date.now() - ar.since > 3 * 3600000 || (ar.resumes || 0) >= 3) {
+        delete chat.activeRun;
+        chat.messages.push({ id: mid(), ts: Date.now(), role: 'event', isError: true, content: '⚠️ Работа прервалась (перезапуск сервера). ' + hint + 'Напишите «продолжай», чтобы продолжить.' });
+        store.saveChat(u.id, chat);
+        continue;
+      }
+      chat.messages.push({ id: mid(), ts: Date.now(), role: 'event', content: '↻ Сервер перезапускался во время работы. ' + hint + 'Продолжаю с того же места…' });
+      store.saveChat(u.id, chat);
+      startRun(u, chat.id, 'Работа была прервана перезапуском сервера (' + (hint || 'возможно, не хватило памяти или сервер обновлялся') + '). Проверь состояние (фоновые процессы, файлы, логи) и продолжи задачу с того места, где остановился. Если тяжёлая команда упала из-за памяти — сделай её экономнее (меньше параллельности, обработка частями).', [], { auto: true, resume: true })
+        .catch((e) => console.error('resume failed', chat.id, e.message));
+    }
+  }
+}
+setTimeout(resumeInterrupted, 4000);
 
 module.exports = { liveSummary, runTeam, runScheduled, rollback, submitForm, liveChat, startRun, stopRun, runState, setBroadcast, setPhoneCaller, internalTool };

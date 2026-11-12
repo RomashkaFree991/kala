@@ -412,7 +412,7 @@
       const live = S.run.toolOutputs[tc.id];
       const running = !r && S.run.running;
       const open = S.open.has(tc.id);
-      const st = r ? (r.isError ? `<span style="color:var(--err)">${ic('x')}</span>` : `<span class="ok">${ic('check')}</span>`) : running ? '<span class="spin"></span>' : '<span class="muted">—</span>';
+      const st = r ? (r.isError ? `<span style="color:var(--err)">${ic('x')}</span>` : `<span class="ok">${ic('check')}</span>`) : running ? '<span class="spin"></span>' : '<span class="tag" style="color:var(--warn)">прервано</span>';
       html += `<div class="tool ${open ? 'open' : ''} ${r && r.isError ? 'bad' : ''} ${running ? 'live' : ''}" data-tc="${esc(tc.id)}">
         <div class="th"><span class="ti">${ic(TOOL_ICONS[tc.name] || 'tool')}</span><span class="nm">${esc(TOOL_NAMES[tc.name] || tc.name)}</span><span class="sm">${esc(toolSummary(tc))}</span><span class="st">${st}</span><span class="chev">${ic('down', 'sm')}</span></div>
         <div class="tb"><div><div class="inner"><div class="muted">Аргументы</div><pre>${esc(JSON.stringify(tc.args, null, 2))}</pre>
