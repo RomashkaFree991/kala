@@ -256,3 +256,8 @@ details.think.live summary{color:var(--fg)}
 .empty .big.koalabig{background:#000;color:#fff;--kbg:#000;--kin:#bdbdbd;border-color:#333}
 .empty .big.koalabig .koala{width:50px;height:50px;animation:koalabob 3s ease-in-out infinite}
 @keyframes koalabob{0%,100%{transform:translateY(0) rotate(0)}25%{transform:translateY(-3px) rotate(-4deg)}75%{transform:translateY(-2px) rotate(4deg)}}
+
+/* stop button: square inside a spinning ring */
+.send.stop{position:relative;background:#fff;color:#000;border:0;margin-right:4px}
+.send.stop .i{width:16px;height:16px;position:relative;z-index:1}
+.send.stop .ring{position:absolute;inset:-3px;border-radius:50%;border:2.5px solid rgba(255,255,255,.18);border-top-color:#fff;animation:sp .9s linear infinite}

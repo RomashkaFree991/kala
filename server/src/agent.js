@@ -116,6 +116,7 @@ ${chat.teamId && teams.get(user.id, chat.teamId) ? '- ВАЖНО: в этом ч
 - GitHub: github_clone, github_pr (нужен $GITHUB_TOKEN через ask_user). Локальные модели: ollama_pull. Резервные копии: backup_now (в Google Диск).
 - Виртуальный Android на сервере: android_start, android_screenshot, android_tap/type/swipe/key, android_install (поставить собранный APK и протестировать), android_open, android_shell. Пользователь видит экран.
 - Сервер и телефон можно использовать вместе: например скопировать файл с телефона на сервер (phone_to_server), обработать/собрать его там и вернуть на телефон (server_to_phone) или прислать через send_file. Если телефон не в сети — попроси пользователя открыть приложение Kala.
+- НЕ ОСТАНАВЛИВАЙСЯ на полпути: работай шаг за шагом, пока задача полностью не выполнена и не проверена. Не заканчивай ответ фразами «сейчас сделаю…»/«далее я…» — вместо этого сразу вызывай инструмент. Не спрашивай «продолжить?» — продолжай сам. Спрашивай пользователя только если без его решения или данных дальше никак (тогда используй ask_user).
 - Перед каждым действием коротко пиши, что собираешься сделать и зачем (одна строка) — пользователь видит это в реальном времени.
 - Долгие процессы запускай с background=true, а постоянные боты/сайты — через service_create. Не используй интерактивные команды (добавляй -y и т.п.).
 ${skills.promptBlock(user.id)}`;
@@ -221,19 +222,49 @@ async function runApi(uid, user, chat, run) {
     const phoneCall = phoneCaller(uid);
     run.partial = ''; run.thinking = ''; run.drafts = {}; run.newInput = false;
     setStatus(uid, chat.id, run, step ? 'Анализирует результат…' : 'Думает над задачей…');
-    const dr = makeDraftEmitter(uid, chat.id, run);
-    const res = await llm.stream({
-      p, model: chat.model, system: systemPrompt(chat, user, !!phoneCall),
-      messages: normalizeForApi(chat.messages), tools: tools.DEFS, signal: run.abort.signal, loadImage,
-      onText: (d) => { if (!run.partial) setStatus(uid, chat.id, run, 'Пишет ответ…'); run.partial += d; emit(uid, chat.id, { t: 'delta', text: d }); },
-      onThinking: dr.thinking, onToolStart: dr.start, onToolDelta: dr.delta,
-    });
-    dr.flush();
+    // call the model; temporary provider errors (overload, rate limit, network) are retried, not fatal
+    let res, attempt = 0;
+    for (;;) {
+      const dr = makeDraftEmitter(uid, chat.id, run);
+      try {
+        res = await llm.stream({
+          p, model: chat.model, system: systemPrompt(chat, user, !!phoneCall),
+          messages: normalizeForApi(chat.messages), tools: tools.DEFS, signal: run.abort.signal, loadImage,
+          onText: (d) => { if (!run.partial) setStatus(uid, chat.id, run, 'Пишет ответ…'); run.partial += d; emit(uid, chat.id, { t: 'delta', text: d }); },
+          onThinking: dr.thinking, onToolStart: dr.start, onToolDelta: dr.delta,
+        });
+        dr.flush();
+        break;
+      } catch (e) {
+        dr.flush();
+        if (run.abort.signal.aborted || !RETRYABLE.test(e.message || '') || attempt >= 6) throw e;
+        const wait = Math.min(60, 4 * 2 ** attempt++);
+        run.partial = ''; run.drafts = {}; run.thinking = '';
+        emit(uid, chat.id, { t: 'delta_reset' });
+        setStatus(uid, chat.id, run, `Провайдер временно не отвечает (${String(e.message).slice(0, 60)}…) — повтор через ${wait} с (попытка ${attempt}/6)`);
+        await new Promise((ok) => { const t = setTimeout(ok, wait * 1000); run.abort.signal.addEventListener('abort', () => { clearTimeout(t); ok(); }); });
+        if (run.abort.signal.aborted) return;
+      }
+    }
     if (res.usage) usage.add(uid, { provider: chat.provider, model: chat.model, ...res.usage, chatId: chat.id });
     run.partial = '';
     const amsg = addMessage(uid, chat, { role: 'assistant', content: res.text, toolCalls: res.toolCalls, reasoning: res.reasoning || run.thinking || undefined, model: chat.model });
     run.drafts = {}; run.thinking = '';
-    if (!amsg.toolCalls.length) { if (run.newInput) continue; return; }
+    if (!amsg.toolCalls.length) {
+      if (run.newInput) continue;
+      // the model stopped half-way ("сейчас сделаю…", output cut by length, empty answer) -> nudge it to continue
+      const tail = String(res.text || '').trim().slice(-220);
+      const cut = /max_tokens|length/.test(String(res.stopReason || ''));
+      const promised = !tail || /[:：]\s*$|…\s*$|\b(сейчас|теперь|далее|дальше|следующ\S* шаг|продолжу|продолжаю|приступаю|начинаю|начну|займусь|давай(те)? (я )?(сделаю|начну)|let me|now i('ll| will)|next,? i('ll| will)|i('ll| will) now)\b[^.!?]*[.!]?\s*$/i.test(tail);
+      run.autoCont = run.autoCont || 0;
+      if ((cut || promised) && run.autoCont < 4) {
+        run.autoCont++;
+        addMessage(uid, chat, { role: 'user', auto: true, content: cut ? 'Твой ответ обрезался по длине — продолжи с того места, где остановился.' : 'Продолжай выполнять задачу до конца — не останавливайся и не спрашивай разрешения. Если всё уже сделано и проверено — кратко подведи итог.' });
+        continue;
+      }
+      return;
+    }
+    run.autoCont = 0;
     for (const tc of amsg.toolCalls) {
       if (run.abort.signal.aborted) {
         addMessage(uid, chat, { role: 'tool', toolCallId: tc.id, name: tc.name, content: 'Остановлено пользователем', isError: true });
@@ -371,6 +402,8 @@ async function rollback(uid, chatId, commit) {
   addMessage(uid, chat, { role: 'event', content: `↩ Файлы проекта возвращены к состоянию до выбранного шага${n ? ` (удалено новых файлов: ${n})` : ''}` });
   return n;
 }
+
+const RETRYABLE = /\b(408|409|425|429|500|502|503|504|520|521|522|523|524|529)\b|overload|rate.?limit|too many requests|capacity|temporar|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|fetch failed|terminated|socket hang up|network|timed? ?out|Unexpected end|premature close/i;
 
 // ---------- forms (ask_user) ----------
 function askForm(uid, chatId, run, form) {
@@ -533,7 +566,17 @@ async function startRun(user, chatId, text, images, opts = {}) {
         run.newInput = false;
         let mark = chat.messages.length;
         if (chat.teamId && chat.teamMode === 'parallel' && teams.get(uid, chat.teamId)) { await runParallelTeam(uid, user, chat, run, String(text || '')); }
-        else await runClaudeCli(uid, user, chat, run, prompt);
+        else {
+          for (let attempt = 0; ; attempt++) {
+            try { await runClaudeCli(uid, user, chat, run, attempt ? 'Продолжи задачу с того места, где остановился (была временная ошибка соединения).' : prompt); break; }
+            catch (e) {
+              if (run.abort.signal.aborted || !RETRYABLE.test(e.message || '') || attempt >= 4) throw e;
+              const wait = Math.min(60, 5 * 2 ** attempt);
+              setStatus(uid, chat.id, run, `Claude временно недоступен — повтор через ${wait} с`);
+              await new Promise((ok) => setTimeout(ok, wait * 1000));
+            }
+          }
+        }
         // messages written while Claude Code was working -> continue the same session with them
         while (run.newInput && !run.abort.signal.aborted) {
           run.newInput = false;

@@ -29,5 +29,5 @@ module.exports = {
   INVITE_CODE: process.env.KALA_INVITE_CODE || '',
   SECRET: loadSecret(),
   MAX_TOOL_OUTPUT: 30000,
-  MAX_AGENT_STEPS: parseInt(process.env.KALA_MAX_STEPS || '200', 10),
+  MAX_AGENT_STEPS: parseInt(process.env.KALA_MAX_STEPS || '400', 10),
 };

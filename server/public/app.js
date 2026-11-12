@@ -137,6 +137,7 @@
     if (m.t === 'providers_changed') { S.models = null; if ($('#provpage')) renderProviders(); return; }
     if (!S.chat || m.chatId !== S.chat.id) return;
     if (m.t === 'chat_updated') return loadChat(S.chat.id, true);
+    if ((m.t === 'status' || m.t === 'delta' || m.t === 'tool_draft') && !S.run.running) { S.run.running = true; S.syncBtns && S.syncBtns(); updateConn(); }
     if (m.t === 'run_start') { S.run = newRun(true); renderMsgs(); renderComposer(); updateConn(); }
     else if (m.t === 'run_end') { S.run = newRun(false); closeFormSheet(); renderMsgs(); renderComposer(); updateConn(); }
     else if (m.t === 'status') { S.run.status = m.text; const el = $('#stext'); if (el) el.textContent = m.text; else renderLive(); }
@@ -160,6 +161,8 @@
       if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; const lv = document.querySelector('#msgs > [data-k="__live"]'); if (lv) lv.innerHTML = ''; }
       if (m.message.role === 'tool') delete S.run.toolOutputs[m.message.toolCallId];
       scheduleRender();
+    } else if (m.t === 'delta_reset') {
+      S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; renderLive();
     } else if (m.t === 'delta') {
       S.run.partial += m.text;
       const el = $('#partial');
@@ -397,6 +400,7 @@
   // Incremental rendering: every message becomes a block keyed by id; unchanged blocks are kept
   // as-is (no image reloads, no flicker, open cards stay open).
   function msgHtml(m, results) {
+    if (m.role === 'user' && m.auto) return `<div class="msg event"><span>↻ ИИ продолжает работу сам</span></div>`;
     if (m.role === 'user') return `<div class="msg user"><div class="bubble">${(m.images || []).map((i) => `<img src="${mediaUrl(i)}">`).join('')}${esc(m.content)}${m.midRun ? '<div class="midrun">↪ отправлено во время работы</div>' : ''}</div></div>`;
     if (m.role === 'event') return `<div class="msg event ${m.isError ? 'error' : ''}"><span>${esc(m.content)}</span></div>`;
     if (m.role !== 'assistant') return '';
@@ -516,18 +520,26 @@
       ${A ? `<button class="icon" id="cam" title="Фото">${ic('camera')}</button>` : ''}
       <button class="icon" id="mic" title="Голосом">${ic('mic')}</button>
       <textarea id="inp" rows="1" placeholder="Опишите задачу…"></textarea>
-      ${S.run.running ? `<button class="send stop" id="stopb" title="Остановить">${ic('stop')}</button>` : ''}
+      <button class="send stop" id="stopb" title="Остановить" style="${S.run.running ? '' : 'display:none'}"><span class="ring"></span>${ic('stop')}</button>
       <button class="send" id="send" title="${S.run.running ? 'Дописать ИИ во время работы' : 'Отправить'}">${ic('send')}</button></div>
       <input type="file" id="fileinp" multiple hidden>`;
     const inp = $('#inp');
     inp.value = draft;
     const grow = () => { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 160) + 'px'; };
-    inp.oninput = () => { grow(); localStorage.setItem('kala_draft_' + S.chat.id, inp.value); };
+    // while the AI works: big stop button (spinning ring + square); the send arrow appears only when you type
+    const syncBtns = () => {
+      const running = S.run.running, has = !!inp.value.trim() || S.pending.length > 0;
+      $('#stopb').style.display = running ? '' : 'none';
+      $('#send').style.display = !running || has ? '' : 'none';
+    };
+    S.syncBtns = syncBtns;
+    inp.oninput = () => { grow(); localStorage.setItem('kala_draft_' + S.chat.id, inp.value); syncBtns(); };
     grow();
     $('#send').onclick = () => send();
-    if ($('#stopb')) $('#stopb').onclick = () => stopRun();
+    $('#stopb').onclick = () => stopRun();
+    syncBtns();
     inp.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(); } };
-    inp.placeholder = S.run.running ? 'Дописать ИИ — он учтёт на следующем шаге…' : 'Опишите задачу…';
+    inp.placeholder = S.run.running ? 'Дописать ИИ…' : 'Опишите задачу…';
     if (hadFocus) inp.focus();
     $('#att').onclick = () => $('#fileinp').click();
     $('#mic').onclick = toggleVoice;
@@ -541,6 +553,7 @@
     renderPending();
   }
   function renderPending() {
+    S.syncBtns && S.syncBtns();
     const p = $('#pend');
     if (!p) return;
     p.innerHTML = '';
