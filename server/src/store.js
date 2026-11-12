@@ -9,10 +9,19 @@ function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 }
 function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 1), { mode: 0o600 });
-  fs.renameSync(tmp, file);
+  safeWrite(file, JSON.stringify(data, null, 1));
+}
+// atomic write; on "permission denied" repair ownership of Kala's data folder and retry once
+function safeWrite(file, content, retried) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + '.' + process.pid + '.' + crypto.randomBytes(4).toString('hex') + '.tmp';
+    fs.writeFileSync(tmp, content, { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    if (!retried && (e.code === 'EACCES' || e.code === 'EPERM') && require('./config').fixOwnership(DATA_DIR)) return safeWrite(file, content, true);
+    throw e;
+  }
 }
 
 const DB_FILE = path.join(DATA_DIR, 'db.json');
@@ -92,7 +101,7 @@ function mediaPath(uid, id) {
 function loadMedia(uid, id) { return fs.readFileSync(mediaPath(uid, id)); }
 
 module.exports = {
-  get db() { return db; }, saveDb, readJson, writeJson, userDir, encrypt, decrypt,
+  get db() { return db; }, saveDb, readJson, writeJson, safeWrite, userDir, encrypt, decrypt,
   getProviders, setProvider,
   getChat, saveChat, deleteChat, listChats,
   saveMedia, loadMedia, mediaPath,

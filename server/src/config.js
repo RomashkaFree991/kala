@@ -6,8 +6,24 @@ const ROOT = path.resolve(__dirname, '..');
 const DATA_DIR = path.resolve(process.env.KALA_DATA_DIR || path.join(ROOT, 'data'));
 const WORKSPACES_DIR = path.resolve(process.env.KALA_WORKSPACES_DIR || path.join(DATA_DIR, 'workspaces'));
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
-fs.mkdirSync(WORKSPACES_DIR, { recursive: true });
+// Kala runs as its own user; if something (e.g. the AI in root mode) created root-owned files
+// in Kala's folders, take them back so writes never fail with EACCES.
+function fixOwnership(dir) {
+  try {
+    const { execFileSync } = require('child_process');
+    const uid = process.getuid(), gid = process.getgid();
+    if (uid === 0) return false;
+    const foreign = execFileSync('find', [dir, '-xdev', '!', '-user', String(uid), '-print', '-quit'], { timeout: 60000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    if (!foreign) return false;
+    execFileSync('sudo', ['-n', 'chown', '-R', uid + ':' + gid, dir], { timeout: 120000, stdio: 'ignore' });
+    console.log('fixed ownership of', dir);
+    return true;
+  } catch { return false; }
+}
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+try { fs.mkdirSync(WORKSPACES_DIR, { recursive: true }); } catch {}
+fixOwnership(DATA_DIR);
+fixOwnership(WORKSPACES_DIR);
 
 // Secret used to encrypt provider keys at rest. Generated once and kept in DATA_DIR.
 function loadSecret() {
@@ -18,6 +34,7 @@ function loadSecret() {
 }
 
 module.exports = {
+  fixOwnership,
   ROOT,
   DATA_DIR,
   WORKSPACES_DIR,

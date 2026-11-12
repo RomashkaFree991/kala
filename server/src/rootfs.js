@@ -25,7 +25,11 @@ function withRoot(fn, rootFn, force) {
 const readFile = (f, root) => withRoot(() => fs.readFileSync(f), () => sudo(['cat', '--', f]), false);
 function writeFile(f, data, root) {
   return withRoot(() => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, data); },
-    () => { sudo(['mkdir', '-p', '--', path.dirname(f)]); sudo(['sh', '-c', 'cat > "$1"', 'sh', f], data); }, root && !canWrite(f));
+    () => {
+      sudo(['mkdir', '-p', '--', path.dirname(f)]); sudo(['sh', '-c', 'cat > "$1"', 'sh', f], data);
+      // keep Kala's own folders owned by Kala
+      try { const { DATA_DIR, WORKSPACES_DIR } = require('./config'); if ([DATA_DIR, WORKSPACES_DIR].some((d) => f.startsWith(d + path.sep))) sudo(['chown', process.getuid() + ':' + process.getgid(), '--', f]); } catch {}
+    }, root && !canWrite(f));
 }
 function canWrite(f) {
   try { fs.accessSync(fs.existsSync(f) ? f : path.dirname(f), fs.constants.W_OK); return true; } catch { return false; }

@@ -147,8 +147,7 @@ async function loginFinish(uid, redirected) {
       else if (Date.now() - started > 30000 || (st.done && !st.token)) { clearInterval(iv); reject(new Error('rclone не получил токен: ' + st.log.slice(-400))); }
     }, 200);
   });
-  fs.mkdirSync(path.dirname(confPath(uid)), { recursive: true });
-  fs.writeFileSync(confPath(uid), `[gdrive]\ntype = drive\nscope = drive\ntoken = ${typeof token === 'string' ? token : JSON.stringify(token)}\n`, { mode: 0o600 });
+  require('./store').safeWrite(confPath(uid), `[gdrive]\ntype = drive\nscope = drive\ntoken = ${typeof token === 'string' ? token : JSON.stringify(token)}\n`);
   auth = null;
   return { ok: true };
 }
