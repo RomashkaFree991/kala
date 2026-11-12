@@ -261,3 +261,12 @@ details.think.live summary{color:var(--fg)}
 .send.stop{position:relative;background:#fff;color:#000;border:0;margin-right:4px}
 .send.stop .i{width:16px;height:16px;position:relative;z-index:1}
 .send.stop .ring{position:absolute;inset:-3px;border-radius:50%;border:2.5px solid rgba(255,255,255,.18);border-top-color:#fff;animation:sp .9s linear infinite}
+
+.pbar{height:10px;border-radius:10px;background:var(--bg4);overflow:hidden;margin-top:10px}
+.pbar i{display:block;height:100%;background:#fff;border-radius:10px;transition:width .6s var(--ease);background-image:linear-gradient(90deg,#fff,#cfcfcf,#fff);background-size:200% 100%;animation:shine 1.6s linear infinite}
+.pbar.err i{background:var(--err);animation:none}
+@keyframes shine{to{background-position:-200% 0}}
+.amini{position:fixed;right:12px;bottom:92px;width:120px;z-index:15;background:var(--bg2);border:1px solid var(--line2);border-radius:18px;overflow:hidden;box-shadow:0 16px 40px rgba(0,0,0,.6);animation:pop .3s var(--ease);cursor:pointer}
+.amini .bh{display:flex;align-items:center;gap:6px;font-size:11px;padding:4px 4px 4px 8px;color:var(--fg2)}
+.amini .bh .icon{width:24px;height:24px;margin-left:auto}
+.amini img{display:block;width:100%;min-height:120px;background:#000}

@@ -129,7 +129,14 @@
     if (m.t === 'browser_closed') { hideBrowserMini(); return; }
     if (m.t === 'browser_status') { const w = $('.bwait'); if (w) w.innerHTML = '<span class="spin"></span> ' + esc(m.text); return; }
     if (m.t === 'notify') { if (!S.chat || m.item.chatId !== S.chat.id || document.hidden) { toast(m.item.title + (m.item.body ? ': ' + m.item.body.slice(0, 80) : '')); } if (A && A.notify && document.hidden) A.notify(m.item.title, m.item.body || ''); return; }
-    if (m.t === 'android_frame') { const a = $('#aimg'); if (a) { a.src = 'data:' + m.mime + ';base64,' + m.data; S.aframe = m; const w = $('.await'); if (w) w.remove(); } return; }
+    if (m.t === 'android_frame') {
+      S.aframe = m;
+      const src = 'data:' + m.mime + ';base64,' + m.data;
+      const a = $('#aimg'); if (a) { a.src = src; const w = $('.await'); if (w) w.remove(); }
+      const mi = $('#amini img'); if (mi) mi.src = src;
+      return;
+    }
+    if (m.t === 'android_progress') { S.ajob = m.job; drawAndroidJob(); if (m.job && m.job.done && $('#apage')) { setAndroidView(true); androidPageRefresh && androidPageRefresh(); } return; }
     if (m.t === 'android_log') { const l = $('#alog'); if (l) { l.textContent = m.error ? 'Ошибка: ' + m.error : m.text; } if (m.done && !m.error && $('#apage')) setAndroidView(true); return; }
     if (m.t === 'ollama') { const l = $('#olog'); if (l) l.textContent = m.error ? 'Ошибка: ' + m.error : (m.text || `${m.model}: ${m.status || ''} ${m.pct != null ? m.pct + '%' : ''}`); if (m.done) { const pg = $('#olpage'); if (pg) setTimeout(() => ollamaDraw && ollamaDraw(), 500); } return; }
     if (m.t === 'term_out' || m.t === 'term_exit') { termEvent(m); return; }
@@ -155,7 +162,7 @@
     } else if (m.t === 'form') { S.run.form = m.form; showFormSheet(m.form); }
     else if (m.t === 'form_done') { if (S.run.form && S.run.form.id === m.id) S.run.form = null; closeFormSheet(m.id); }
     else if (m.t === 'browser_active') showBrowserMini();
-    else if (m.t === 'android_active') { if (!$('#apage')) toast('ИИ работает с виртуальным Android — меню → Инструменты → Android'); }
+    else if (m.t === 'android_active') showAndroidMini();
     else if (m.t === 'msg') {
       if (!S.chat.messages.find((x) => x.id === m.message.id)) S.chat.messages.push(m.message);
       if (m.message.role === 'assistant') { S.run.partial = ''; S.run.drafts = {}; S.run.thinking = ''; const lv = document.querySelector('#msgs > [data-k="__live"]'); if (lv) lv.innerHTML = ''; }
@@ -1221,10 +1228,18 @@
           ${card('Процессор', m.now.cpu + '%', 'за последние 24 часа', 'cpu', 100, '#ffffff')}
           ${card('Память', m.now.mem + '%', gb(m.mem.used) + ' из ' + gb(m.mem.total), 'mem', 100, '#7ee2a8')}
           ${card('Диск', m.now.disk + '%', m.disk ? 'свободно ' + gb(m.disk.free) + ' из ' + gb(m.disk.total) : '', 'disk', 100, m.now.disk > 90 ? '#ff8080' : '#f3c969')}
+          <div id="diskx"></div>
           ${card('Сеть', '↓ ' + rate(m.now.rx), '↑ ' + rate(m.now.tx), 'rx', 0, '#8ab4ff')}
           <div class="label">Процессы</div>${m.procs.map((p) => `<div class="fsrow" style="cursor:default"><span class="n" style="font:12px var(--mono)">${esc(p.cmd)}</span><span class="muted">${p.cpu}% · ${p.mem}%</span></div>`).join('')}
           <div class="label">Боты и службы Kala</div>${m.services.length ? m.services.map((x) => `<div class="fsrow" style="cursor:default"><span class="dot ${x.active === 'active' ? 'on' : ''}"></span><span class="n">${esc(x.unit)}</span><span class="muted">${esc(x.sub)}</span></div>`).join('') : '<div class="muted">Пока нет</div>'}
           <p class="muted">Тревоги (диск > 90%, память > 92%, CPU > 95% 5 мин) приходят уведомлением.</p>`;
+        api('/disk').then((d) => {
+          const box = $('#diskx', body); if (!box) return;
+          if (d.unused > 1073741824) {
+            box.innerHTML = `<div class="mcard" style="border-color:#5a4a1a"><b>Не используется ${gb(d.unused)} диска</b><div class="muted">После апгрейда VPS диск стал больше, но раздел остался старым. Можно расширить без перезагрузки и без потери данных.</div><button class="btn primary block" id="dexp">Расширить диск до ${gb(d.diskSize)}</button><pre class="muted" id="dlog" style="white-space:pre-wrap;font:11px var(--mono)"></pre></div>`;
+            $('#dexp', box).onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Расширяю…'; try { const r2 = await api('/disk/expand', { body: {} }); $('#dlog', box).textContent = r2.log; toast('Готово'); setTimeout(draw, 1500); } catch (err) { $('#dlog', box).textContent = err.message; e.target.disabled = false; e.target.textContent = 'Повторить'; } };
+          }
+        }).catch(() => {});
       };
       draw(); timer = setInterval(draw, 15000);
     });
@@ -1233,33 +1248,66 @@
   // ---------------- virtual Android ----------------
   S.aview = false;
   function setAndroidView(on) { if (S.aview === on) return; S.aview = on; S.ws && S.ws.readyState === 1 && S.ws.send(JSON.stringify({ t: 'android_view', on })); }
+  // progress bar of the virtual phone start (runs on the server in background)
+  function drawAndroidJob() {
+    const j = S.ajob, box = $('#ajob');
+    if (!box) return;
+    if (!j || (j.done && !j.error)) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="mcard"><div class="row"><b class="grow">${j.error ? 'Ошибка запуска' : 'Запуск виртуального телефона'}</b><span class="big" style="font-size:18px">${j.error ? '' : (j.pct || 0) + '%'}</span></div>
+      <div class="pbar ${j.error ? 'err' : ''}"><i style="width:${j.error ? 100 : (j.pct || 0)}%"></i></div>
+      <div class="muted" style="margin-top:6px;white-space:pre-wrap">${esc(j.text || '')}</div>
+      ${j.error ? '' : '<div class="muted" style="margin-top:4px">Загрузка идёт на сервере в фоне — можно закрыть экран, придёт уведомление.</div>'}</div>`;
+  }
+  // small live screen in the corner while the AI uses the phone
+  function showAndroidMini() {
+    if ($('#apage') || $('#amini')) return;
+    const el = h(`<div id="amini" class="amini"><div class="bh"><span class="dot busy"></span> Телефон ИИ<button class="icon" data-x>${ic('x', 'sm')}</button></div><img alt=""></div>`);
+    document.body.appendChild(el);
+    if (S.aframe) el.querySelector('img').src = 'data:' + S.aframe.mime + ';base64,' + S.aframe.data;
+    el.onclick = (e) => { if (e.target.closest('[data-x]')) { el.remove(); if (!$('#apage')) setAndroidView(false); return; } el.remove(); androidPage(); };
+    setAndroidView(true);
+  }
+  let androidPageRefresh = null;
   async function androidPage() {
-    let st = {};
-    try { st = await api('/android'); } catch {}
-    page('Виртуальный Android', (body, close) => {
+    const old = $('#amini'); if (old) old.remove();
+    page('Виртуальный Android', (body, close, extra) => {
       body.classList.add('bbody');
       const pg = body.parentElement; pg.id = 'apage';
-      body.innerHTML = `<div class="muted" id="alog">${st.running ? 'Запущен' : 'Не запущен. Нужен Docker и модуль binder (на KVM-серверах обычно есть).'}</div>
-        ${st.running ? '' : `<button class="btn primary block" id="astart">${ic('phone', 'sm')} Запустить виртуальный телефон</button>`}
-        <div class="bwrap phonewrap"><img id="aimg" alt="">${st.running ? '<div class="muted await"><span class="spin"></span> Загрузка экрана…</div>' : ''}</div>
-        <div class="bkeys"><input class="field grow" id="atext" placeholder="Ввести текст…" autocapitalize="none"><button class="icon" data-k="back">${ic('back')}</button><button class="icon" data-k="home">${ic('circle')}</button><button class="icon" data-k="Enter">${ic('send', 'sm')}</button></div>
-        <p class="muted" style="text-align:center;margin:4px 0 0">Нажатие — тап, свайп — прокрутка. ИИ ставит сюда собранные APK и тестирует их.</p>`;
-      if ($('#astart', body)) $('#astart', body).onclick = async (e) => { e.target.disabled = true; try { await api('/android/start', { body: {} }); $('#alog', body).textContent = 'Запуск… (первый раз до 10 минут)'; } catch (err) { toast(err.message); e.target.disabled = false; } };
-      const img = $('#aimg', body);
-      if (S.aframe) img.src = 'data:' + S.aframe.mime + ';base64,' + S.aframe.data;
-      const inp = (ev) => S.ws && S.ws.send(JSON.stringify({ t: 'android_input', ev }));
-      let start = null;
-      img.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY }; });
-      img.addEventListener('pointerup', (e) => {
-        if (!start) return; const rc = img.getBoundingClientRect(); const dy = e.clientY - start.y, dx = e.clientX - start.x;
-        if (Math.abs(dy) < 10 && Math.abs(dx) < 10) inp({ type: 'click', x: (e.clientX - rc.left) / rc.width, y: (e.clientY - rc.top) / rc.height });
-        else inp({ type: 'scroll', x: (start.x - rc.left) / rc.width, y: (start.y - rc.top) / rc.height, dy: -dy * ((S.aframe ? S.aframe.h : 1440) / rc.height) });
-        start = null;
-      });
-      body.querySelectorAll('[data-k]').forEach((b) => b.onclick = () => inp(b.dataset.k === 'Enter' ? { type: 'key', key: 'Enter' } : { type: b.dataset.k }));
-      $('#atext', body).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); if (e.target.value) inp({ type: 'text', text: e.target.value }); e.target.value = ''; } };
-      if (st.running) setAndroidView(true);
-      const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); setAndroidView(false); } });
+      extra.innerHTML = `<button class="icon" data-stop title="Выключить телефон">${ic('x')}</button>`;
+      const draw = async () => {
+        let st = {};
+        try { st = await api('/android'); } catch {}
+        if (st.job) S.ajob = st.job;
+        const busy = S.ajob && !S.ajob.done && !S.ajob.error;
+        body.innerHTML = `<div id="ajob"></div>
+          ${st.running ? '' : busy ? '' : `<div class="muted">Телефон не запущен. Нужен Docker и модуль ядра binder (на KVM-серверах обычно есть). Первый запуск скачивает ≈1 ГБ.</div><button class="btn primary block" id="astart">${ic('phone', 'sm')} Запустить виртуальный телефон</button>`}
+          <div class="bwrap phonewrap" style="${st.running ? '' : 'display:none'}"><img id="aimg" alt=""><div class="muted await"><span class="spin"></span> Загрузка экрана…</div></div>
+          <div class="bkeys" style="${st.running ? '' : 'display:none'}"><input class="field grow" id="atext" placeholder="Ввести текст…" autocapitalize="none"><button class="icon" data-k="back">${ic('back')}</button><button class="icon" data-k="home">${ic('circle')}</button><button class="icon" data-k="recents">${ic('grid', 'sm')}</button><button class="icon" data-k="Enter">${ic('send', 'sm')}</button></div>
+          <p class="muted" style="text-align:center;margin:4px 0 0">Нажатие — тап, свайп — прокрутка. Попросите ИИ в чате: «скачай приложение X на виртуальный телефон и протестируй» или «собери мой APK и проверь на телефоне» — вы будете видеть всё вживую.</p>`;
+        drawAndroidJob();
+        if ($('#astart', body)) $('#astart', body).onclick = async (e) => {
+          e.target.disabled = true;
+          try { const r2 = await api('/android/start', { body: {} }); S.ajob = r2.job; draw(); } catch (err) { toast(err.message); e.target.disabled = false; }
+        };
+        const img = $('#aimg', body);
+        if (S.aframe && img) { img.src = 'data:' + S.aframe.mime + ';base64,' + S.aframe.data; const w = $('.await', body); if (w) w.remove(); }
+        const inp = (ev) => S.ws && S.ws.send(JSON.stringify({ t: 'android_input', ev }));
+        let start = null;
+        img.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY }; });
+        img.addEventListener('pointerup', (e) => {
+          if (!start) return; const rc = img.getBoundingClientRect(); const dy = e.clientY - start.y, dx = e.clientX - start.x;
+          if (Math.abs(dy) < 10 && Math.abs(dx) < 10) inp({ type: 'click', x: (e.clientX - rc.left) / rc.width, y: (e.clientY - rc.top) / rc.height });
+          else inp({ type: 'scroll', x: (start.x - rc.left) / rc.width, y: (start.y - rc.top) / rc.height, dy: -dy * ((S.aframe ? S.aframe.h : 1440) / rc.height) });
+          start = null;
+        });
+        body.querySelectorAll('[data-k]').forEach((b) => b.onclick = () => inp(b.dataset.k === 'Enter' ? { type: 'key', key: 'Enter' } : b.dataset.k === 'recents' ? { type: 'key', key: 'recents' } : { type: b.dataset.k }));
+        $('#atext', body).onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); if (e.target.value) inp({ type: 'text', text: e.target.value }); e.target.value = ''; } };
+        if (st.running) setAndroidView(true);
+      };
+      androidPageRefresh = draw;
+      draw();
+      $('[data-stop]', extra).onclick = async () => { if (!confirm('Выключить виртуальный телефон? (приложения и данные в нём сохранятся)')) return; try { await api('/android/stop', { body: {} }); setAndroidView(false); toast('Выключен'); draw(); } catch (e) { toast(e.message); } };
+      const obs = new MutationObserver(() => { if (!document.body.contains(pg)) { obs.disconnect(); setAndroidView(false); androidPageRefresh = null; } });
       obs.observe(document.body, { childList: true });
     });
   }

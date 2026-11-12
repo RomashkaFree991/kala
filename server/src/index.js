@@ -250,13 +250,29 @@ api.post('/ollama/pull', wrap(async (req, res) => {
 api.post('/backup', wrap(async (req, res) => res.json({ msg: await extras.backup(req.user.id, req.user, gdrive, { includeProjects: req.body.projects !== false }) })));
 
 // ---------- virtual Android ----------
-api.get('/android', wrap(async (req, res) => res.json(await android.status())));
+api.get('/android', wrap(async (req, res) => res.json({ ...(await android.status()), job: android.progress() })));
 api.post('/android/start', wrap(async (req, res) => {
   if (!req.user.admin) throw auth.httpError(403, 'Только владелец');
-  res.json({ ok: true });
-  android.tool(req.user.id, 'android_start', {}, { onOutput: (t) => broadcast(req.user.id, { t: 'android_log', text: t }) })
-    .then((r) => broadcast(req.user.id, { t: 'android_log', done: true, text: r.content.split('\n')[0] }))
-    .catch((e) => broadcast(req.user.id, { t: 'android_log', done: true, error: e.message }));
+  res.json({ ok: true, job: await android.startBackground() });
+}));
+api.post('/android/stop', wrap(async (req, res) => { if (!req.user.admin) throw auth.httpError(403, 'Только владелец'); res.json({ msg: (await android.tool(req.user.id, 'android_stop', {}, {})).content }); }));
+
+// ---------- disk: grow the root partition to the whole (upgraded) disk ----------
+api.get('/disk', wrap(async (req, res) => {
+  const out = await extras.run('lsblk', ['-b', '-J', '-o', 'NAME,SIZE,TYPE,MOUNTPOINT,FSTYPE'], { timeout: 10000 }).catch(() => '{}');
+  const st = fs.statfsSync('/');
+  let disk = null, part = null;
+  try {
+    const j = JSON.parse(out);
+    const walk = (arr, parent) => { for (const d of arr || []) { if (d.mountpoint === '/') { part = d; disk = parent; } walk(d.children, d.type === 'disk' ? d : parent); } };
+    walk(j.blockdevices, null);
+  } catch {}
+  res.json({ fsTotal: st.blocks * st.bsize, fsFree: st.bavail * st.bsize, diskSize: disk ? Number(disk.size) : null, partSize: part ? Number(part.size) : null, unused: disk && part ? Math.max(0, Number(disk.size) - Number(part.size)) : 0 });
+}));
+api.post('/disk/expand', wrap(async (req, res) => {
+  if (!req.user.admin) throw auth.httpError(403, 'Только владелец');
+  const out = await extras.run('bash', [path.join(cfg.ROOT, 'expand-disk.sh')], { root: true, timeout: 10 * 60000 });
+  res.json({ ok: true, log: out.slice(-2000) });
 }));
 
 // ---------- agent teams ----------
@@ -479,6 +495,7 @@ agent.setBroadcast(broadcast);
 notify.setBroadcast(broadcast);
 android.setBroadcast(broadcast);
 scheduler.setRunner((t) => agent.runScheduled(t, extras, gdrive));
+android.setReadyHook((e) => { for (const u of store.db.users.filter((x) => x.admin)) notify.push(u.id, e ? '📱 Виртуальный телефон: ошибка' : '📱 Виртуальный телефон готов', e ? e.message : 'Можно открывать и тестировать приложения'); });
 monitor.onAlert((title, body) => { for (const u of store.db.users.filter((x) => x.admin)) notify.push(u.id, '🖥 ' + title, body); });
 browser.setBroadcast(broadcast);
 agent.setPhoneCaller((uid) => {
