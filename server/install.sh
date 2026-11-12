@@ -38,6 +38,56 @@ apt_try() {
 }
 port_busy() { ss -ltnH "( sport = :$1 )" 2>/dev/null | grep -q .; }
 
+# downloads go to the main disk: /tmp on this kind of VPS is a small RAM disk
+WORK=/var/lib/kala/install-tmp
+mkdir -p "$WORK"
+# leftovers of older installs that filled /tmp
+rm -rf /tmp/templates /tmp/tpl.zip /tmp/godot.zip /tmp/cmdtools.zip /tmp/gradle.zip /tmp/cmdline-tools /tmp/Godot_v* 2>/dev/null || true
+
+make_update_cmd() {
+# short update command: kala-update
+cat > /usr/local/bin/kala-update <<EOF
+#!/usr/bin/env bash
+cd "$(dirname "$SRC_DIR")" && git pull && sudo bash server/install.sh $DOMAIN $EMAIL "\$@"
+EOF
+chmod +x /usr/local/bin/kala-update
+}
+
+FULL=0
+for a in "$@"; do [ "$a" = "--full" ] && FULL=1; done
+
+########################## БЫСТРОЕ ОБНОВЛЕНИЕ ##########################
+# Kala is already installed -> only update its code and restart (seconds, not minutes).
+# Full reinstall of everything (packages, nginx, SSL, SDKs): add --full
+if [ "$FULL" = 0 ] && [ -f /etc/systemd/system/kala.service ] && [ -f /etc/kala.port ] && [ -d "$APP_DIR/node_modules" ]; then
+  log "Быстрое обновление Kala (всё остальное уже установлено; полная переустановка: --full)"
+  PORT="$(cat /etc/kala.port)"
+  rsync -a --delete --exclude node_modules --exclude data "$SRC_DIR/" "$APP_DIR/" || cp -a "$SRC_DIR/." "$APP_DIR/"
+  NEWHASH="$(cat "$APP_DIR/package.json" "$APP_DIR/package-lock.json" 2>/dev/null | sha256sum | cut -c1-16)"
+  if [ "$NEWHASH" != "$(cat "$APP_DIR/.pkghash" 2>/dev/null)" ]; then
+    echo "Обновляю зависимости…"
+    (cd "$APP_DIR" && TMPDIR="$WORK" npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1) || die "npm install не сработал"
+    echo "$NEWHASH" > "$APP_DIR/.pkghash"
+  fi
+  APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR" "$DATA_DIR" "$APP_HOME/projects" 2>/dev/null
+  # service settings added in newer versions
+  U=/etc/systemd/system/kala.service
+  grep -q '^StartLimitIntervalSec' "$U" || sed -i 's/^\[Unit\]$/[Unit]\nStartLimitIntervalSec=0/' "$U"
+  grep -q '^OOMScoreAdjust' "$U" || sed -i 's/^LimitNOFILE=.*/&\nOOMScoreAdjust=-800/' "$U"
+  systemctl daemon-reload
+  systemctl restart kala
+  for i in $(seq 1 20); do curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && break; sleep 1; done
+  if curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1; then
+    make_update_cmd
+    echo -e "\n\033[1;32m✓ Kala обновлена и работает: https://$DOMAIN\033[0m"
+    echo "  В следующий раз обновлять одной командой: kala-update"
+  else
+    journalctl -u kala -n 30 --no-pager; die "Kala не запустилась после обновления (лог выше)"
+  fi
+  exit 0
+fi
+
 ########################## ЧАСТЬ 1: сервер ##########################
 log "0/6 Диск: использую весь объём VPS"
 bash "$SRC_DIR/expand-disk.sh" 2>&1 | tail -4 || warn "Не удалось расширить диск автоматически"
@@ -87,7 +137,8 @@ echo "$APP_USER ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/90-kala && chmod 440 /e
 APP_HOME="$(getent passwd "$APP_USER" | cut -d: -f6)"
 mkdir -p "$APP_DIR" "$DATA_DIR" "$APP_HOME/projects"
 rsync -a --delete --exclude node_modules --exclude data "$SRC_DIR/" "$APP_DIR/" || cp -a "$SRC_DIR/." "$APP_DIR/"
-(cd "$APP_DIR" && npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1) || die "npm install не сработал"
+(cd "$APP_DIR" && TMPDIR="$WORK" npm install --omit=dev --no-audit --no-fund >/dev/null 2>&1) || die "npm install не сработал"
+cat "$APP_DIR/package.json" "$APP_DIR/package-lock.json" 2>/dev/null | sha256sum | cut -c1-16 > "$APP_DIR/.pkghash"
 chown -R "$APP_USER:$APP_USER" "$APP_DIR" "$DATA_DIR" "$APP_HOME/projects"
 
 # Choose a free local port (your other Node apps may already use 3000)
@@ -239,9 +290,9 @@ sudo -u "$APP_USER" -H node "$APP_DIR/node_modules/playwright-core/cli.js" insta
 
 echo "· Android SDK"
 if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-  mkdir -p "$ANDROID_HOME/cmdline-tools" && cd /tmp && \
+  mkdir -p "$ANDROID_HOME/cmdline-tools" && cd "$WORK" && \
   wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdtools.zip && \
-  rm -rf cmdline-tools && unzip -q cmdtools.zip && rm -rf "$ANDROID_HOME/cmdline-tools/latest" && \
+  rm -rf cmdline-tools && unzip -qo cmdtools.zip </dev/null && rm -rf "$ANDROID_HOME/cmdline-tools/latest" && \
   mv cmdline-tools "$ANDROID_HOME/cmdline-tools/latest" && rm -f cmdtools.zip || warn "Android cmdline-tools не скачались"
 fi
 if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
@@ -254,21 +305,22 @@ fi
 
 echo "· Gradle"
 if ! command -v gradle >/dev/null; then
-  cd /tmp && wget -q https://services.gradle.org/distributions/gradle-8.14.3-bin.zip -O gradle.zip \
-    && unzip -qo gradle.zip -d /opt && ln -sfn /opt/gradle-8.14.3/bin/gradle /usr/local/bin/gradle && rm -f gradle.zip \
+  cd "$WORK" && wget -q https://services.gradle.org/distributions/gradle-8.14.3-bin.zip -O gradle.zip \
+    && unzip -qo gradle.zip -d /opt </dev/null && ln -sfn /opt/gradle-8.14.3/bin/gradle /usr/local/bin/gradle && rm -f gradle.zip \
     || warn "Gradle не установлен"
 fi
 
 echo "· Godot $GODOT_VERSION + шаблоны экспорта"
 if ! command -v godot >/dev/null; then
-  cd /tmp && wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -O godot.zip \
-    && unzip -qo godot.zip && install -m 755 "Godot_v${GODOT_VERSION}_linux.x86_64" /usr/local/bin/godot && rm -f godot.zip "Godot_v${GODOT_VERSION}_linux.x86_64" \
+  cd "$WORK" && wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip" -O godot.zip \
+    && unzip -qo godot.zip </dev/null && install -m 755 "Godot_v${GODOT_VERSION}_linux.x86_64" /usr/local/bin/godot && rm -f godot.zip "Godot_v${GODOT_VERSION}_linux.x86_64" \
     || warn "Godot не установлен"
 fi
 TPL_DIR="$APP_HOME/.local/share/godot/export_templates/${GODOT_VERSION/-/.}"
-if [ ! -d "$TPL_DIR" ]; then
-  cd /tmp && wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz" -O tpl.zip \
-    && rm -rf templates && unzip -qo tpl.zip && mkdir -p "$TPL_DIR" && mv templates/* "$TPL_DIR/" && rm -rf templates tpl.zip \
+if [ ! -f "$TPL_DIR/version.txt" ]; then
+  rm -rf "$TPL_DIR"
+  cd "$WORK" && wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz" -O tpl.zip \
+    && rm -rf templates && unzip -qo tpl.zip </dev/null && mkdir -p "$TPL_DIR" && mv templates/* "$TPL_DIR/" && rm -rf templates tpl.zip \
     && chown -R "$APP_USER:$APP_USER" "$APP_HOME/.local" || warn "Шаблоны Godot не установлены"
 fi
 sudo -u "$APP_USER" mkdir -p "$APP_HOME/.config/godot"
@@ -301,9 +353,12 @@ export PIP_BREAK_SYSTEM_PACKAGES=1
 EOF
 systemctl daemon-reload && systemctl restart kala
 
+rm -rf "$WORK"/* 2>/dev/null || true
+make_update_cmd
+
 log "Готово!"
 echo "  Адрес для приложения: $([ $SSL_OK = 1 ] && echo https || echo http)://$DOMAIN"
 echo "  Первый созданный аккаунт = владелец."
 echo "  Логи:          journalctl -u kala -f"
 echo "  Диагностика:   sudo bash $SRC_DIR/doctor.sh $DOMAIN"
-echo "  Обновить:      cd $(dirname "$SRC_DIR") && git pull && sudo bash server/install.sh $DOMAIN $EMAIL"
+echo "  Обновить:      kala-update   (быстро, ~15 с; полная переустановка: kala-update --full)"
