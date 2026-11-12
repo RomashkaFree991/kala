@@ -4,6 +4,8 @@ D="${1:-skkapap.fun}"
 PORT="$(cat /etc/kala.port 2>/dev/null || echo 3000)"
 ok(){ echo -e "  \033[32m✓\033[0m $*"; }; bad(){ echo -e "  \033[31m✗\033[0m $*"; }
 echo "== Kala doctor ($D, порт $PORT) =="
+echo "-- служба: $(systemctl is-active kala) / автозапуск: $(systemctl is-enabled kala 2>/dev/null)"
+ss -ltnp 2>/dev/null | grep ":$PORT " | sed 's/^/   порт занят: /'
 echo "ОС: $(. /etc/os-release 2>/dev/null; echo "$PRETTY_NAME")  node: $(node -v 2>/dev/null || echo нет)"
 systemctl is-active --quiet kala && ok "служба kala запущена" || bad "служба kala НЕ запущена"
 curl -fsS "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && ok "Kala отвечает на 127.0.0.1:$PORT" || bad "Kala не отвечает на 127.0.0.1:$PORT"
@@ -22,5 +24,5 @@ for d in /tmp /var/tmp /var/cache/apt /var/lib/apt/lists /var/lib/dpkg; do
 done
 command -v gpgv >/dev/null && ok "gpgv есть" || bad "gpgv отсутствует (apt не может проверять подписи): sudo apt-get install --reinstall gpgv"
 command -v ufw >/dev/null && echo "-- ufw: $(ufw status | head -1)"
-echo "-- последние логи kala:"; journalctl -u kala -n 15 --no-pager 2>/dev/null | sed 's/^/   /'
+echo "-- последние логи kala:"; journalctl -u kala -n 40 --no-pager 2>/dev/null | sed 's/^/   /'
 echo "-- ошибки nginx:"; tail -n 5 /var/log/nginx/error.log 2>/dev/null | sed 's/^/   /'

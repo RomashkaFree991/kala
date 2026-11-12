@@ -100,7 +100,10 @@ JAVA_HOME_GUESS="/usr/lib/jvm/default-java"
 cat > /etc/systemd/system/kala.service <<EOF
 [Unit]
 Description=Kala AI agent server
-After=network.target
+After=network-online.target
+Wants=network-online.target
+# keep retrying forever (never give up after a few fast failures)
+StartLimitIntervalSec=0
 
 [Service]
 User=$APP_USER
